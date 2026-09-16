@@ -1,10 +1,16 @@
 [project]
 name = "incypher-bridge"
 version = "0.1.0"
-description = "Temporary human-inspectable PoW TCP bridge for IN-CYPHER raw-TCP challenge instances"
+description = "Temporary IN-CYPHER PoW TCP bridge + minimal DeepSeek-style autonomous agent unit"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "openai>=1.0",
+]
+
+[project.scripts]
+incypher-bridge = "incypher_bridge.cli:main"
+incypher-agent = "incypher_agent.cli:main"
 
 [build-system]
 requires = ["setuptools"]

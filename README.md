@@ -23,7 +23,7 @@ sha256(mac + str(i).encode()).digest()
 .
 ├── pyproject.toml
 ├── uv.toml
-├── .env.local -> ../CypherAutomaton/.env.local   # 0600 私密文件
+├── .env.local                    # 0600 私密文件，含 CYPHER_TEAM_KEY / DEEPSEEK_API_KEY
 ├── .env.local.example
 ├── README.md
 ├── docs/
@@ -31,7 +31,8 @@ sha256(mac + str(i).encode()).digest()
 ├── src/
 │   ├── bridge.py                 # python bridge.py ... 包装
 │   ├── solver.py                 # 兼容官方 solver.connect
-│   └── incypher_bridge/          # 主包
+│   ├── incypher_bridge/          # PoW / TCP bridge
+│   └── incypher_agent/           # minimal model-tool agent unit
 │       ├── cli.py
 │       ├── client.py
 │       ├── config.py
@@ -75,13 +76,12 @@ uv 缓存默认配置在项目内 `.uv-cache/`，适合受限环境。
 私密文件必须是 `0600`，否则会报错；可用 `--allow-insecure-key-file` 临时绕过。
 team key 只用于本地 HMAC 计算，不会发送到远端，也不会写入日志。
 
-当前仓库的 `.env.local` 是指向 `../CypherAutomaton/.env.local` 的符号链接，
-原文件权限为 `0600`。如果要本目录独立保存：
+当前项目使用自己目录下的 `.env.local`，权限为 `0600`。里面需要有：
 
-```bash
-rm .env.local
-cp ../CypherAutomaton/.env.local .env.local
-chmod 600 .env.local
+```dotenv
+CYPHER_TEAM_KEY=...
+DEEPSEEK_API_KEY=...
+CYPHER_MODEL=deepseek-flash
 ```
 
 ## 启动一个 challenge / run
@@ -169,6 +169,72 @@ uv run python -m incypher_bridge context \
   --challenge-id overflow-ward \
   --run-id <run_id> \
   --json
+```
+
+
+## Minimal Agent Unit（阶段 A）
+
+阶段 A 实现了一个最小 model-tool loop：
+
+- 工具只有 `bash`、`str_replace_editor`、`report_flag`。
+- 使用真实 DeepSeek API，默认模型 `deepseek-flash`。
+- 不借鉴 smolagents / Temporal。
+- 当前只做硬超限上报：`max_seconds` / `max_model_calls` / `max_tool_calls`。
+- 不做偏离检测、卡死检测、多任务检测，parent scheduler 暂缓。
+- 模型只是普通 assistant message 不会结束，只有 `report_flag` 或硬超限才结束。
+
+先确认 API key 与模型连通：
+
+```bash
+uv run python -m incypher_agent smoke
+```
+
+运行一个已经由 bridge 建立的 run：
+
+```bash
+uv run python -m incypher_agent run \
+  --challenge-id overflow-ward \
+  --run-id <run_id> \
+  --max-seconds 3600 \
+  --max-model-calls 200 \
+  --max-tool-calls 500
+```
+
+它会读取 `run.json` 中的：
+
+- `agent_endpoint`
+- `description_text` / `challenge_md`
+- `challenge_id` / `run_id`
+
+并在以下位置写入状态：
+
+```text
+.cypher_bridge/challenges/<challenge_id>/runs/<run_id>/agent/
+├── state.json
+├── events.jsonl
+├── heartbeat
+├── escalation.json
+├── flag.json
+└── workspace/
+```
+
+硬超限时写入 `escalation.json` 并返回 exit code `10`：
+
+```json
+{
+  "reason": "hard_limit",
+  "detail": "max_seconds exceeded ...",
+  "model_calls": 12,
+  "tool_calls": 34
+}
+```
+
+查看 agent 状态：
+
+```bash
+uv run python -m incypher_agent show \
+  --challenge-id overflow-ward \
+  --run-id <run_id>
 ```
 
 ## 人类管理接口

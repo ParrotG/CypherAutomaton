@@ -7,6 +7,7 @@ This makes multiple deploys and repeated attempts easy to inspect.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -186,6 +187,51 @@ def touch_mtime(path: Path) -> None:
         os.utime(path, None)
     except OSError:
         pass
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def resolve_run_dir(
+    state_dir: Path,
+    *,
+    challenge_id: str | None = None,
+    run_id: str | None = None,
+) -> Path:
+    """Resolve a run directory by explicit ids or the active/latest run."""
+
+    state_dir = Path(state_dir).expanduser().resolve()
+    if challenge_id:
+        cid = safe_component(challenge_id, fallback="challenge")
+        runs_dir = state_dir / "challenges" / cid / "runs"
+        if run_id:
+            run_dir = runs_dir / safe_component(run_id, fallback="run")
+            if not run_dir.exists():
+                raise FileNotFoundError(
+                    f"run not found: challenge={cid!r} run={run_id!r} ({run_dir})"
+                )
+            return run_dir
+        newest = newest_run_path(state_dir, cid)
+        if newest is None:
+            raise FileNotFoundError(f"no runs found for challenge {cid!r}")
+        return newest.root
+
+    active = _read_json(state_dir / "active.json")
+    latest = active.get("latest") if isinstance(active.get("latest"), dict) else {}
+    candidate = latest.get("run_dir")
+    if candidate and Path(candidate).exists():
+        return Path(candidate)
+    newest = newest_run_path(state_dir)
+    if newest is None:
+        raise FileNotFoundError(
+            f"no bridge runs found under {state_dir}; start one with `serve`"
+        )
+    return newest.root
 
 
 def human_age(start_epoch: float | None) -> str:
