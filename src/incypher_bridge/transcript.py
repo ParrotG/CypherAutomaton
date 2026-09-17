@@ -57,6 +57,7 @@ class EventLogger:
         self.paths = paths
         self.max_preview = max_preview
         self._lock = threading.RLock()
+        self._closed = False
         self._seq = 0
         self._events_handle = paths.events_file.open("a", encoding="utf-8")
         self._transcript_handle = paths.transcript_file.open("a", encoding="utf-8")
@@ -77,6 +78,7 @@ class EventLogger:
 
     def close(self) -> None:
         with self._lock:
+            self._closed = True
             for handle in (
                 self._events_handle,
                 self._transcript_handle,
@@ -94,6 +96,8 @@ class EventLogger:
         if not data and direction != "SYS":
             return {}
         with self._lock:
+            if self._closed:
+                return {}
             self._seq += 1
             sequence = self._seq
             raw_file = ""

@@ -58,13 +58,14 @@ class RunPaths:
         *,
         challenge_id: str,
         run_id: str,
+        exclusive: bool = False,
     ) -> "RunPaths":
         state_dir = Path(state_dir).expanduser().resolve()
         challenge_id = safe_component(challenge_id, fallback="challenge")
         run_id = safe_component(run_id, fallback=generate_run_id())
 
         root = state_dir / "challenges" / challenge_id / "runs" / run_id
-        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        root.mkdir(parents=True, exist_ok=not exclusive, mode=0o700)
         try:
             os.chmod(root, 0o700)
         except OSError:

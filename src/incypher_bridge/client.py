@@ -19,6 +19,7 @@ import errno
 import re
 import socket
 import time
+import threading
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -232,6 +233,8 @@ def _try_variant(
     progress_every: int | None,
     verbose: bool,
     on_event: EventSink | None,
+    cancel_event: threading.Event | None = None,
+    on_socket: Callable[[socket.socket], None] | None = None,
 ) -> PrefixedSocket:
     _emit(on_event, "pow_attempt", {"variant": variant.name})
     if verbose:
@@ -239,6 +242,8 @@ def _try_variant(
 
     sock = socket.create_connection((host, port), timeout=connect_timeout)
     try:
+        if on_socket is not None:
+            on_socket(sock)
         banner = _recv_until(sock, lambda b: bool(_BANNER_RE.search(b)), timeout=read_timeout)
         if not banner:
             raise PowError("Connection closed before the PoW banner")
@@ -259,6 +264,7 @@ def _try_variant(
             variant=variant,
             timeout=pow_timeout,
             progress_every=progress_every,
+            cancel_event=cancel_event,
         )
         elapsed = time.monotonic() - started
         if verbose:
@@ -316,6 +322,8 @@ def connect(
     progress_every: int | None = None,
     verbose: bool = False,
     on_event: EventSink | None = None,
+    cancel_event: threading.Event | None = None,
+    on_socket: Callable[[socket.socket], None] | None = None,
 ) -> PrefixedSocket:
     """Connect to an IN-CYPHER raw-TCP instance and clear its PoW gate.
 
@@ -337,6 +345,8 @@ def connect(
     candidate_list = tuple(variants or DEFAULT_VARIANTS)
     failures: list[str] = []
     for index, variant in enumerate(candidate_list):
+        if cancel_event is not None and cancel_event.is_set():
+            raise PowError("Connection cancelled")
         try:
             return _try_variant(
                 host,
@@ -351,11 +361,16 @@ def connect(
                 progress_every=progress_every,
                 verbose=verbose,
                 on_event=on_event,
+                cancel_event=cancel_event,
+                on_socket=on_socket,
             )
         except PowRejected as exc:
             failures.append(f"{variant.name}: {exc}")
             if index + 1 < len(candidate_list):
-                time.sleep(max(0.0, retry_delay))
+                if cancel_event is not None:
+                    cancel_event.wait(max(0.0, retry_delay))
+                else:
+                    time.sleep(max(0.0, retry_delay))
             continue
 
     raise PowError(

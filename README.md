@@ -1,5 +1,26 @@
 # IN-CYPHER temporary bridge
 
+Bridge 现支持同一题目下的多条独立持久 TCP 会话，不需要启动真实 Agent。
+`serve` 的主 run 默认管理最多 4 条会话（包括自身），PoW 握手默认串行：
+
+```bash
+uv run python -m incypher_bridge serve --target HOST:PORT \
+  --challenge-id example --run-id primary --max-sessions 4 --max-handshakes 1
+
+# Run these commands in another terminal.
+uv run python -m incypher_bridge session-create \
+  --challenge-id example --run-id primary --new-run-id worker-a
+uv run python -m incypher_bridge session-create \
+  --challenge-id example --run-id primary --new-run-id worker-b
+uv run python -m incypher_bridge sessions --challenge-id example --run-id primary
+```
+
+创建接口异步返回 JSON；等待目标会话 `state=ready` 且 `agent_endpoint` 非空，
+再连接其独立端口。每条会话仍只接受一个客户端，重复创建相同 id 返回原会话。
+通过原有 `status` / `observe` / `reconnect` / `stop --run-id worker-a` 管理子会话；
+停止主 run 会关闭全部子会话。连接独立不代表远端容器或数据状态独立。
+详细协议和测试方法见 [工程说明第 14 节](docs/工程说明.md#14-bridge-多会话不包含-agent--调度器)。
+
 一个无第三方运行时依赖的临时中间层，用于 IN-CYPHER Hackathon 的 raw-TCP
 题目：
 

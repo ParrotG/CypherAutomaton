@@ -50,6 +50,8 @@ def make_handler(team_key: bytes, bits: int) -> Type[socketserver.BaseRequestHan
                     line = _recv_line(conn)
                     if not line:
                         break
+                    if line == b"__close__\n":
+                        return
                     conn.sendall(b"echo: " + line)
             else:
                 conn.sendall(b"denied: invalid proof (wrong team key or insufficient work)\n")

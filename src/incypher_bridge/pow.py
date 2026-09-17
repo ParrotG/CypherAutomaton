@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import re
 import time
+import threading
 from dataclasses import dataclass
 from enum import Enum
 from typing import Iterator
@@ -186,6 +187,7 @@ def solve_pow(
     variant: PowVariant = DEFAULT_VARIANTS[0],
     timeout: float | None = 120.0,
     progress_every: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> bytes:
     """Return the X bytes that satisfy *challenge* for *variant*.
 
@@ -210,6 +212,8 @@ def solve_pow(
     counter = 0
     sha256 = hashlib.sha256
     while True:
+        if (counter & 0xFFFF) == 0 and cancel_event is not None and cancel_event.is_set():
+            raise PowError("PoW cancelled")
         candidate = _x_bytes(counter, variant.x_encoding)
         if _leading_zero_bits_ok(sha256(prefix + candidate).digest(), challenge.bits):
             return candidate

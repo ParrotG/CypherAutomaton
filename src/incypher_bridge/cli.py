@@ -26,6 +26,7 @@ from .paths import (
 )
 from .pow import DEFAULT_VARIANTS, PowError, PowVariant, solve_pow
 from .session import BridgeConfig, BridgeSession
+from .manager import SessionManager
 from .transcript import EventLogger, format_status_lines, write_json_atomic
 
 DEFAULT_STATE_DIR = ".cypher_bridge"
@@ -307,6 +308,9 @@ def _load_description(
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
+    if args.max_sessions < 1 or args.max_handshakes < 1:
+        _eprint("error: --max-sessions and --max-handshakes must be positive")
+        return 2
     target_text = args.target
     if not target_text:
         if args.host or args.port:
@@ -397,7 +401,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
     }
     write_json_atomic(challenge_dir / "challenge.json", challenge_meta)
 
-    paths = RunPaths.create(state_dir, challenge_id=challenge_id, run_id=run_id)
+    try:
+        paths = RunPaths.create(state_dir, challenge_id=challenge_id, run_id=run_id, exclusive=True)
+    except FileExistsError:
+        _eprint("error: run directory already exists; use a new --run-id")
+        return 2
     config = BridgeConfig(
         host=host,
         port=port,
@@ -422,7 +430,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
         metadata={"target": target_text, "description_file": description_file},
     )
     session = BridgeSession(config, paths)
-    control = ControlServer(session, paths.control_socket)
+    manager = SessionManager(
+        session, max_sessions=args.max_sessions, max_handshakes=args.max_handshakes,
+    )
+    control = ControlServer(session, paths.control_socket, manager=manager)
     session.add_shutdown_hook(control.shutdown)
 
     try:
@@ -691,6 +702,20 @@ def cmd_stop(args: argparse.Namespace) -> int:
     return 0 if response.get("ok") else 1
 
 
+def cmd_sessions(args: argparse.Namespace) -> int:
+    try:
+        run_dir = _resolve_run_dir(
+            _state_dir(args), challenge_id=args.challenge_id, run_id=args.run_id,
+        )
+        fields = {"run_id": args.new_run_id} if args.command == "session-create" else {}
+        response = control_request(_control_for_run(run_dir), args.command, **fields)
+    except (FileNotFoundError, ControlError) as exc:
+        _eprint(f"error: {exc}")
+        return 1
+    print(json.dumps(response, ensure_ascii=False))
+    return 0 if response.get("ok") else 1
+
+
 def cmd_pow_solve(args: argparse.Namespace) -> int:
     from .pow import PowChallenge
 
@@ -804,6 +829,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="local agent port; 0 chooses a free port automatically (default: 0)",
     )
     serve.add_argument("--name", help="optional alias stored in metadata")
+    serve.add_argument("--max-sessions", type=int, default=4,
+                       help="maximum live sessions including the primary run (default: 4)")
+    serve.add_argument("--max-handshakes", type=int, default=1,
+                       help="maximum simultaneous upstream handshakes (default: 1)")
     serve.add_argument("--env-file", default=str(find_env_file(None)), help="private env file")
     serve.add_argument("--team-key-file", help="private file containing only the team key")
     serve.add_argument(
@@ -847,6 +876,12 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument("--challenge-id", help="filter by challenge id")
     list_parser.add_argument("--state-dir", default=DEFAULT_STATE_DIR)
     list_parser.add_argument("--json", action="store_true")
+
+    sessions = subparsers.add_parser("sessions", help="list sessions owned by a primary run as JSON")
+    _add_selector(sessions)
+    create = subparsers.add_parser("session-create", help="create an independent session asynchronously")
+    _add_selector(create)
+    create.add_argument("--new-run-id", required=True, help="unique child run id; repeated requests are idempotent")
 
     status = subparsers.add_parser("status", help="show a run summary")
     _add_selector(status)
@@ -897,6 +932,8 @@ def main(argv: list[str] | None = None) -> int:
     command = args.command
     if command == "serve":
         return cmd_serve(args)
+    if command in ("sessions", "session-create"):
+        return cmd_sessions(args)
     if command == "list":
         return cmd_list(args)
     if command == "status":

@@ -61,12 +61,17 @@ class BridgeError(RuntimeError):
 class BridgeSession:
     """Owns one PoW-cleared upstream connection and a local relay endpoint."""
 
-    def __init__(self, config: BridgeConfig, paths: RunPaths) -> None:
+    def __init__(
+        self, config: BridgeConfig, paths: RunPaths, *,
+        handshake_slots: threading.BoundedSemaphore | None = None,
+    ) -> None:
         self.config = config
         self.paths = paths
         self.logger = EventLogger(paths)
 
         self._lock = threading.RLock()
+        self._write_lock = threading.Lock()
+        self._handshake_slots = handshake_slots
         self._stop_event = threading.Event()
         self._done_event = threading.Event()
         self._reconnect_requested = threading.Event()
@@ -84,6 +89,7 @@ class BridgeSession:
         self._last_error: str | None = None
 
         self._upstream: PrefixedSocket | None = None
+        self._connecting: socket.socket | None = None
         self._upstream_generation = 0
         self._pow_summary: str | None = None
         self._upstream_meta: dict[str, Any] = {}
@@ -121,11 +127,13 @@ class BridgeSession:
         self._write_meta()
         try:
             self._connect_initial()
-            self._start_listener()
-            self._start_timer()
+            with self._lock:
+                if self._stop_event.is_set():
+                    raise BridgeError("session stopped during startup")
+                self._start_listener()
+                self._start_timer()
         except BaseException:
             self.stop(reason="startup failed")
-            self._done_event.set()
             raise
         self.logger.system(
             f"agent endpoint ready at tcp://{self._local_host}:{self._local_port}"
@@ -141,10 +149,10 @@ class BridgeSession:
     def stop(self, reason: str = "user request") -> None:
         """Stop the session, closing listener, control socket, client and upstream."""
 
-        if self._stop_event.is_set():
-            return
-        self._stop_event.set()
         with self._lock:
+            if self._stop_event.is_set():
+                return
+            self._stop_event.set()
             self._stop_reason = reason
             self._state = "stopping"
         self.logger.system(f"stopping: {reason}", level="WARN")
@@ -159,6 +167,14 @@ class BridgeSession:
 
         self._detach_client("bridge stopping", close=True)
         self._close_upstream("bridge stopping")
+        with self._lock:
+            connecting = self._connecting
+        if connecting is not None:
+            try:
+                connecting.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            connecting.close()
 
         for hook in list(self._shutdown_hooks):
             try:
@@ -170,32 +186,57 @@ class BridgeSession:
             self._state = "stopped"
         self.logger.system("stopped", level="INFO")
         self._write_meta()
+        self.logger.close()
         self._done_event.set()
 
     # ------------------------------------------------------------------
     # Upstream connection
     # ------------------------------------------------------------------
+    def _track_connecting_socket(self, sock: socket.socket) -> None:
+        with self._lock:
+            if self._stop_event.is_set():
+                sock.close()
+                raise BridgeError("session stopped during handshake")
+            self._connecting = sock
+
+    def _open_connection(self) -> PrefixedSocket:
+        slots = self._handshake_slots
+        if slots is not None:
+            while not slots.acquire(timeout=0.1):
+                if self._stop_event.is_set():
+                    raise BridgeError("session stopped while waiting for handshake capacity")
+        try:
+            if self._stop_event.is_set():
+                raise BridgeError("session stopped before handshake")
+            return connect(
+                self.config.host, self.config.port, self.config.team_key,
+                variants=self.config.variants or DEFAULT_VARIANTS,
+                pow_timeout=self.config.pow_timeout,
+                verbose=self.config.verbose, on_event=self._on_pow_event,
+                cancel_event=self._stop_event, on_socket=self._track_connecting_socket,
+            )
+        finally:
+            with self._lock:
+                self._connecting = None
+            if slots is not None:
+                slots.release()
+
     def _connect_initial(self) -> None:
         with self._lock:
+            if self._stop_event.is_set():
+                raise BridgeError("session is stopped")
             self._state = "connecting"
         self.logger.system(
             f"connecting to {self.config.host}:{self.config.port} "
             f"and solving PoW (variants: {'auto' if not self.config.variants else len(self.config.variants)})"
         )
         try:
-            sock = connect(
-                self.config.host,
-                self.config.port,
-                self.config.team_key,
-                variants=self.config.variants or DEFAULT_VARIANTS,
-                pow_timeout=self.config.pow_timeout,
-                verbose=self.config.verbose,
-                on_event=self._on_pow_event,
-            )
+            sock = self._open_connection()
         except Exception as exc:
             with self._lock:
                 self._last_error = f"{type(exc).__name__}: {exc}"
-                self._state = "connect_failed"
+                if not self._stop_event.is_set():
+                    self._state = "connect_failed"
             self.logger.system(f"initial connect failed: {exc}", level="ERROR")
             self._write_meta()
             raise BridgeError(f"could not open upstream connection: {exc}") from exc
@@ -204,6 +245,9 @@ class BridgeSession:
 
     def _adopt_upstream(self, sock: PrefixedSocket) -> None:
         with self._lock:
+            if self._stop_event.is_set():
+                sock.close()
+                return
             self._upstream = sock
             self._upstream_generation += 1
             generation = self._upstream_generation
@@ -280,7 +324,7 @@ class BridgeSession:
             if not data:
                 break
             self.logger.record("C->A", data, source=f"upstream-{generation}")
-            self._deliver_to_client(data)
+            self._deliver_to_client(data, upstream=sock)
 
         self._handle_upstream_loss(sock, generation)
 
@@ -289,16 +333,17 @@ class BridgeSession:
             if self._upstream is not sock:
                 return
             self._upstream = None
+            sock.close()
+            self._pending.clear()
             state_before = self._state
             self._state = "upstream_closed"
+            # Signal EOF before any new upstream session can be attached.
+            self._detach_client("upstream closed", close=True)
         self.logger.system(
             f"upstream generation {generation} closed"
             + (f" (was {state_before})" if state_before else ""),
             level="WARN",
         )
-        # A local agent should see EOF rather than silently continue into a
-        # new, state-less upstream session.
-        self._detach_client("upstream closed", close=True)
         self._write_meta()
         if not self._stop_event.is_set() and (
             self.config.auto_reconnect or self._reconnect_requested.is_set()
@@ -310,13 +355,26 @@ class BridgeSession:
             if self._reconnect_thread is not None and self._reconnect_thread.is_alive():
                 return
             worker = threading.Thread(
-                target=self._reconnect_loop,
+                target=self._reconnect_worker,
                 name="upstream-reconnect",
                 daemon=True,
             )
             self._reconnect_thread = worker
             self._threads.append(worker)
             worker.start()
+
+    def _reconnect_worker(self) -> None:
+        try:
+            self._reconnect_loop()
+        finally:
+            with self._lock:
+                self._reconnect_thread = None
+                # A newly adopted connection can reach EOF before this worker
+                # exits. Its pump must not lose the request for another retry.
+                if self._upstream is None and not self._stop_event.is_set() and (
+                    self.config.auto_reconnect or self._reconnect_requested.is_set()
+                ):
+                    self._ensure_reconnect_worker()
 
     def _reconnect_loop(self) -> None:
         self.logger.system("reconnect worker started")
@@ -328,18 +386,12 @@ class BridgeSession:
                 break
             self._reconnect_requested.clear()
             with self._lock:
+                if self._stop_event.is_set():
+                    break
                 self._state = "reconnecting"
             self._write_meta()
             try:
-                sock = connect(
-                    self.config.host,
-                    self.config.port,
-                    self.config.team_key,
-                    variants=self.config.variants or DEFAULT_VARIANTS,
-                    pow_timeout=self.config.pow_timeout,
-                    verbose=self.config.verbose,
-                    on_event=self._on_pow_event,
-                )
+                sock = self._open_connection()
             except Exception as exc:
                 with self._lock:
                     self._last_error = f"reconnect failed: {type(exc).__name__}: {exc}"
@@ -358,9 +410,13 @@ class BridgeSession:
         self.logger.system("reconnect worker stopped", level="WARN")
 
     def request_reconnect(self) -> dict[str, Any]:
-        self._reconnect_requested.set()
-        self.logger.system("manual reconnect requested")
-        self._close_upstream("manual reconnect")
+        with self._lock:
+            if self._stop_event.is_set():
+                return {"ok": False, "error": "session is stopped"}
+            self._reconnect_requested.set()
+            self.logger.system("manual reconnect requested")
+            self._close_upstream("manual reconnect")
+            self._detach_client("manual reconnect", close=True)
         if not self._stop_event.is_set():
             self._ensure_reconnect_worker()
         return {"ok": True, "state": self._state}
@@ -369,6 +425,7 @@ class BridgeSession:
         with self._lock:
             sock = self._upstream
             self._upstream = None
+            self._pending.clear()
         if sock is None:
             return
         try:
@@ -433,6 +490,9 @@ class BridgeSession:
 
     def _attach_client(self, conn: socket.socket, addr: tuple[Any, ...]) -> None:
         with self._lock:
+            if self._stop_event.is_set() or self._upstream is None:
+                conn.close()
+                return
             if self._client is not None:
                 try:
                     conn.sendall(b"[incypher-bridge] busy\n")
@@ -446,15 +506,17 @@ class BridgeSession:
             generation = self._client_generation
             pending = bytes(self._pending)
             self._pending.clear()
+            # Replay before the pump can deliver newer bytes to this client.
+            if pending:
+                try:
+                    conn.settimeout(1.0)
+                    conn.sendall(pending)
+                except OSError:
+                    self._detach_client("replay failed", close=True, expected=conn)
+                    return
         self.logger.system(f"agent connected from {addr!r} (client generation {generation})")
         if pending:
             self.logger.system(f"replaying {len(pending)} buffered upstream bytes to new agent")
-            try:
-                conn.sendall(pending)
-            except OSError as exc:
-                self.logger.system(f"failed to replay buffer: {exc}", level="WARN")
-                self._detach_client("replay failed", close=True)
-                return
         thread = threading.Thread(
             target=self._client_reader,
             args=(conn, generation),
@@ -477,15 +539,16 @@ class BridgeSession:
             if not data:
                 break
             self.logger.record("A->C", data, source=f"agent-{generation}")
-            error = self._send_upstream(data)
+            error = self._send_upstream(data, client=conn)
             if error:
                 self.logger.system(f"cannot forward agent data: {error}", level="WARN")
-                self._close_upstream("agent write failed")
                 break
-        self._detach_client(f"client generation {generation} disconnected", close=True)
+        self._detach_client(f"client generation {generation} disconnected", close=True, expected=conn)
 
-    def _deliver_to_client(self, data: bytes) -> None:
+    def _deliver_to_client(self, data: bytes, *, upstream: PrefixedSocket | None = None) -> None:
         with self._lock:
+            if upstream is not None and self._upstream is not upstream:
+                return
             conn = self._client
             if conn is None:
                 self._append_pending_locked(data)
@@ -498,14 +561,13 @@ class BridgeSession:
                 client = self._client
                 self._client = None
                 self._client_addr = None
+                # Preserve bytes only within this upstream generation.
+                self._append_pending_locked(data)
         if client is not None:
             try:
                 client.close()
             except OSError:
                 pass
-        # Preserve data for the next agent after a failed delivery.
-        with self._lock:
-            self._append_pending_locked(data)
 
     def _append_pending_locked(self, data: bytes) -> None:
         if len(data) >= self.config.max_pending_bytes:
@@ -525,8 +587,12 @@ class BridgeSession:
             )
         self._pending.extend(data)
 
-    def _detach_client(self, reason: str, *, close: bool) -> None:
+    def _detach_client(
+        self, reason: str, *, close: bool, expected: socket.socket | None = None,
+    ) -> None:
         with self._lock:
+            if expected is not None and self._client is not expected:
+                return
             conn = self._client
             addr = self._client_addr
             self._client = None
@@ -545,18 +611,24 @@ class BridgeSession:
         self.logger.system(f"agent {'closed' if close else 'detached'}: {reason}")
         self._write_meta()
 
-    def _send_upstream(self, data: bytes, *, source: str = "agent") -> str | None:
-        with self._lock:
-            sock = self._upstream
-        if sock is None:
-            return "no upstream connection"
-        try:
-            sock.sendall(data)
-            return None
-        except OSError as exc:
+    def _send_upstream(
+        self, data: bytes, *, source: str = "agent", client: socket.socket | None = None,
+    ) -> str | None:
+        with self._write_lock:
             with self._lock:
-                self._last_error = f"upstream write failed: {exc}"
-            return str(exc)
+                if client is not None and self._client is not client:
+                    return "client is no longer attached"
+                sock = self._upstream
+            if sock is None:
+                return "no upstream connection"
+            try:
+                sock.sendall(data)
+                return None
+            except OSError as exc:
+                with self._lock:
+                    self._last_error = f"upstream write failed: {exc}"
+                self._handle_upstream_loss(sock, self._upstream_generation)
+                return str(exc)
 
     # ------------------------------------------------------------------
     # Control / status helpers
@@ -591,6 +663,7 @@ class BridgeSession:
                 "session_id": self.session_id,
                 "challenge_id": self.config.challenge_id,
                 "run_id": self.config.run_id,
+                "parent_run_id": self.config.metadata.get("parent_run_id"),
                 "challenge_name": self.config.challenge_name,
                 "category": self.config.category,
                 "description_present": bool(self.config.description_text),
@@ -635,6 +708,10 @@ class BridgeSession:
             }
 
     def _write_meta(self) -> None:
+        with self._lock:
+            self._write_meta_locked()
+
+    def _write_meta_locked(self) -> None:
         try:
             status = self.status()
         except Exception:

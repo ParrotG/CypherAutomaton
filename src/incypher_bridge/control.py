@@ -8,9 +8,12 @@ import os
 import socket
 import threading
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 from .session import BridgeSession
+
+if TYPE_CHECKING:
+    from .manager import SessionManager
 
 
 class ControlError(RuntimeError):
@@ -20,9 +23,10 @@ class ControlError(RuntimeError):
 class ControlServer:
     """Tiny JSON-lines control server bound to a private Unix socket."""
 
-    def __init__(self, session: BridgeSession, socket_path: Path) -> None:
+    def __init__(self, session: BridgeSession, socket_path: Path, *, manager: SessionManager | None = None) -> None:
         self.session = session
         self.socket_path = socket_path
+        self.manager = manager
         self._server: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -101,6 +105,12 @@ class ControlServer:
         command = str(request.get("cmd", "")).strip().lower()
         if command == "ping":
             return {"ok": True, "message": "pong"}
+        if command in ("session-create", "sessions"):
+            if self.manager is None:
+                return {"ok": False, "error": "use the primary run control socket for session management"}
+            if command == "sessions":
+                return self.manager.list_sessions()
+            return self.manager.create_session(str(request.get("run_id", "")))
         if command == "status":
             return {"ok": True, "status": self.session.status()}
         if command == "events":
