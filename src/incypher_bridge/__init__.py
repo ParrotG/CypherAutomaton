@@ -1,21 +1,20 @@
-"""Temporary IN-CYPHER bridge: PoW gate + local maintainable TCP session.
+"""FastAPI + asyncio multi-agent bridge for IN-CYPHER raw-TCP challenges."""
 
-The project is intentionally independent of third-party packages so it can run
-inside a restricted sandbox/agent container.  ``solver.py`` at the repository
-root provides an official-helper-compatible ``connect`` function for direct
-use; the bridge daemon adds a local, human-inspectable TCP proxy around that
-connection.
-"""
-
-from .pow import PowChallenge, PowError, PowRejected, PowVariant, solve_pow
-from .client import PrefixedSocket, connect
+from .app import create_app
+from .client import BridgeAPIError, BridgeClient, connect_local
+from .models import ConnectorCreate, ConnectorInfo
+from .pow import PowChallenge, PowError, PowRejected, parse_pow_challenge, solve_pow
 
 __all__ = [
+    "BridgeAPIError",
+    "BridgeClient",
+    "ConnectorCreate",
+    "ConnectorInfo",
     "PowChallenge",
     "PowError",
     "PowRejected",
-    "PowVariant",
-    "PrefixedSocket",
-    "connect",
+    "create_app",
+    "connect_local",
+    "parse_pow_challenge",
     "solve_pow",
 ]
