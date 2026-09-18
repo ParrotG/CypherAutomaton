@@ -14,6 +14,7 @@ dependencies = [
 [project.scripts]
 incypher-bridge = "incypher_bridge.cli:main"
 incypher-agent = "incypher_agent.cli:main"
+incypher-scheduler = "incypher_scheduler.cli:main"
 
 [build-system]
 requires = ["setuptools"]
