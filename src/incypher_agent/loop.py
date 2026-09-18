@@ -21,12 +21,28 @@ def _short(text: Any, limit: int = 500) -> str:
     return value[:limit] + "..."
 
 
+def _estimate_text_tokens(text: Any) -> int:
+    """Conservative token estimate for text without a provider tokenizer."""
+
+    raw = str(text or "")
+    if not raw:
+        return 0
+    encoded = raw.encode("utf-8", errors="replace")
+    return max(1, (len(encoded) + 2) // 3)
+
+
+def _estimate_message_tokens(message: dict[str, Any]) -> int:
+    return _estimate_text_tokens(
+        json.dumps(message, ensure_ascii=False, default=str)
+    )
+
+
 class AgentLoop:
     """A small outer loop that calls a model and executes tool calls.
 
-    In this phase the only automatic stop conditions are hard limits and a
-    successful ``report_flag`` call.  A plain assistant message does not stop
-    the run; the loop nudges the model to continue using tools.
+    Automatic stop conditions are the wall-clock limit, the context-window
+    budget, and a successful ``report_flag`` call.  A plain assistant message
+    does not stop the run; the loop nudges the model to continue using tools.
     """
 
     def __init__(
@@ -77,38 +93,62 @@ class AgentLoop:
                 "workspace": str(self.config.workspace_dir),
                 "agent_endpoint": self.config.agent_endpoint,
                 "max_seconds": self.config.max_seconds,
-                "max_model_calls": self.config.max_model_calls,
-                "max_tool_calls": self.config.max_tool_calls,
+                "context_window_tokens": self.config.context_window_tokens,
+                "context_reserve_tokens": self.config.context_reserve_tokens,
             },
         )
         messages = build_initial_messages(self.config)
+        context_limit_tokens = (
+            self.config.context_window_tokens - self.config.context_reserve_tokens
+        )
+        last_prompt_tokens: int | None = None
+        last_prompt_message_count = 0
 
         try:
             while True:
-                limit_reason = self._hard_limit_reason(
-                    started=started,
-                    model_calls=model_calls,
-                    tool_calls=tool_calls,
+                time_reason = self._time_limit_reason(started=started)
+                if time_reason:
+                    return self._finish_time_limit(time_reason, model_calls, tool_calls)
+
+                estimated_prompt_tokens = self._estimate_next_prompt_tokens(
+                    messages,
+                    baseline_tokens=last_prompt_tokens,
+                    baseline_message_count=last_prompt_message_count,
                 )
-                if limit_reason:
-                    return self._finish_hard_limit(limit_reason, model_calls, tool_calls)
+                if estimated_prompt_tokens >= context_limit_tokens:
+                    return self._finish_context_limit(
+                        estimated_prompt_tokens=estimated_prompt_tokens,
+                        last_prompt_tokens=last_prompt_tokens,
+                        model_calls=model_calls,
+                        tool_calls=tool_calls,
+                    )
 
                 self.store.heartbeat(
-                    f"model_call={model_calls} tool_calls={tool_calls}"
+                    f"model_call={model_calls} tool_calls={tool_calls} "
+                    f"estimated_context={estimated_prompt_tokens}"
                 )
                 self.store.event(
                     "model_request",
                     {
                         "model_calls": model_calls + 1,
                         "message_count": len(messages),
+                        "estimated_prompt_tokens": estimated_prompt_tokens,
+                        "context_limit_tokens": context_limit_tokens,
                         "last_message": _short(messages[-1].get("content"), 300),
                     },
                 )
 
+                request_message_count = len(messages)
                 try:
                     reply = self.model.chat(messages, TOOL_SCHEMAS)
                 except ModelError as exc:
                     return self._finish_model_error(str(exc), model_calls, tool_calls)
+
+                if reply.prompt_tokens > 0:
+                    last_prompt_tokens = reply.prompt_tokens
+                    last_prompt_message_count = request_message_count
+                else:
+                    last_prompt_tokens = None
 
                 model_calls += 1
                 prompt_tokens += reply.prompt_tokens
@@ -147,19 +187,21 @@ class AgentLoop:
                             "completion_tokens": reply.completion_tokens,
                             "total_tokens": reply.total_tokens,
                         },
+                        "context": {
+                            "estimated_prompt_tokens": estimated_prompt_tokens,
+                            "context_limit_tokens": context_limit_tokens,
+                        },
                     },
                 )
                 messages.append(assistant_message)
 
                 if tool_calls_payload:
                     for call in tool_calls_payload:
-                        limit_reason = self._hard_limit_reason(
-                            started=started,
-                            model_calls=model_calls,
-                            tool_calls=tool_calls,
-                        )
-                        if limit_reason:
-                            return self._finish_hard_limit(limit_reason, model_calls, tool_calls)
+                        time_reason = self._time_limit_reason(started=started)
+                        if time_reason:
+                            return self._finish_time_limit(
+                                time_reason, model_calls, tool_calls
+                            )
 
                         call_id = str(call.get("id") or f"call_{tool_calls}")
                         function = call.get("function") or {}
@@ -233,47 +275,95 @@ class AgentLoop:
             return AgentResult(status="STOPPED", reason="keyboard_interrupt", exit_code=130)
 
     # ------------------------------------------------------------------
-    # Hard limits / failure handling
+    # Limits / failure handling
     # ------------------------------------------------------------------
-    def _hard_limit_reason(
-        self,
-        *,
-        started: float,
-        model_calls: int,
-        tool_calls: int,
-    ) -> str | None:
+    def _time_limit_reason(self, *, started: float) -> str | None:
         elapsed = time.monotonic() - started
         if elapsed >= self.config.max_seconds:
             return f"max_seconds exceeded ({elapsed:.1f}s >= {self.config.max_seconds:.1f}s)"
-        if model_calls >= self.config.max_model_calls:
-            return f"max_model_calls reached ({model_calls})"
-        if tool_calls >= self.config.max_tool_calls:
-            return f"max_tool_calls reached ({tool_calls})"
         return None
 
-    def _finish_hard_limit(
+    def _estimate_next_prompt_tokens(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        baseline_tokens: int | None,
+        baseline_message_count: int,
+    ) -> int:
+        """Estimate the next API prompt size.
+
+        ``baseline_tokens`` is the actual prompt size reported by the previous
+        API call.  Messages appended after that call are estimated locally
+        until the next API call provides an exact usage figure again.
+        """
+
+        if baseline_tokens is None:
+            return sum(_estimate_message_tokens(message) for message in messages)
+        new_messages = messages[baseline_message_count:]
+        return baseline_tokens + sum(
+            _estimate_message_tokens(message) for message in new_messages
+        )
+
+    def _finish_time_limit(
         self,
         reason: str,
         model_calls: int,
         tool_calls: int,
     ) -> AgentResult:
         payload = {
-            "reason": "hard_limit",
+            "reason": "time_limit",
             "detail": reason,
             "model_calls": model_calls,
             "tool_calls": tool_calls,
             "workspace": str(self.config.workspace_dir),
             "recorded_at": self.store.state.updated_at,
         }
-        self.store.event("hard_limit", payload)
+        self.store.event("time_limit", payload)
         self.store.write_escalation(payload)
         self.store.set_state(
-            status="HARD_LIMIT",
-            stop_reason=reason,
+            status="TIME_LIMIT",
+            stop_reason="time_limit",
             exit_code=10,
         )
         self.store.close()
-        return AgentResult(status="HARD_LIMIT", reason=reason, exit_code=10)
+        return AgentResult(status="TIME_LIMIT", reason="time_limit", exit_code=10)
+
+    def _finish_context_limit(
+        self,
+        *,
+        estimated_prompt_tokens: int,
+        last_prompt_tokens: int | None,
+        model_calls: int,
+        tool_calls: int,
+    ) -> AgentResult:
+        context_limit_tokens = (
+            self.config.context_window_tokens - self.config.context_reserve_tokens
+        )
+        payload = {
+            "reason": "context_limit",
+            "detail": (
+                f"estimated next prompt {estimated_prompt_tokens} tokens "
+                f">= limit {context_limit_tokens}"
+            ),
+            "context_window_tokens": self.config.context_window_tokens,
+            "context_reserve_tokens": self.config.context_reserve_tokens,
+            "context_limit_tokens": context_limit_tokens,
+            "estimated_prompt_tokens": estimated_prompt_tokens,
+            "last_prompt_tokens": last_prompt_tokens,
+            "model_calls": model_calls,
+            "tool_calls": tool_calls,
+            "workspace": str(self.config.workspace_dir),
+            "recorded_at": self.store.state.updated_at,
+        }
+        self.store.event("context_limit", payload)
+        self.store.write_escalation(payload)
+        self.store.set_state(
+            status="CONTEXT_LIMIT",
+            stop_reason="context_limit",
+            exit_code=10,
+        )
+        self.store.close()
+        return AgentResult(status="CONTEXT_LIMIT", reason="context_limit", exit_code=10)
 
     def _finish_model_error(
         self,

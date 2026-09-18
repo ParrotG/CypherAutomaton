@@ -38,11 +38,13 @@ def _print_startup(config) -> None:
     print(f"Agent:     {config.agent_endpoint or '-'}")
     print(f"Workspace: {config.workspace_dir}")
     print(f"Run dir:   {config.run_dir}")
+    context_limit = config.context_window_tokens - config.context_reserve_tokens
     print(
-        "Hard limits: "
+        "Limits: "
         f"max_seconds={config.max_seconds:g}, "
-        f"max_model_calls={config.max_model_calls}, "
-        f"max_tool_calls={config.max_tool_calls}"
+        f"context_window_tokens={config.context_window_tokens}, "
+        f"context_reserve_tokens={config.context_reserve_tokens}, "
+        f"context_limit_tokens={context_limit}"
     )
     print("=" * 78)
 
@@ -62,8 +64,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             thinking=args.thinking,
             temperature=args.temperature,
             max_seconds=args.max_seconds,
-            max_model_calls=args.max_model_calls,
-            max_tool_calls=args.max_tool_calls,
+            context_window_tokens=args.context_window_tokens,
+            context_reserve_tokens=args.context_reserve_tokens,
             bash_timeout=args.bash_timeout,
             max_tool_output=args.max_tool_output,
             flag_pattern=args.flag_pattern,
@@ -105,8 +107,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             env_file=args.env_file,
             allow_insecure_file=args.allow_insecure_key_file,
             max_seconds=args.max_seconds,
-            max_model_calls=args.max_model_calls,
-            max_tool_calls=args.max_tool_calls,
+            context_window_tokens=args.context_window_tokens,
+            context_reserve_tokens=args.context_reserve_tokens,
             verbose=args.verbose,
             require_api_key=False,
         )
@@ -241,8 +243,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--thinking", default=None, help="enabled/disabled/或留空")
     run.add_argument("--temperature", type=float, default=None)
     run.add_argument("--max-seconds", type=float, default=3600.0)
-    run.add_argument("--max-model-calls", type=int, default=200)
-    run.add_argument("--max-tool-calls", type=int, default=500)
+    run.add_argument("--context-window-tokens", type=int, default=1_000_000)
+    run.add_argument("--context-reserve-tokens", type=int, default=8_000)
     run.add_argument("--bash-timeout", type=float, default=60.0)
     run.add_argument("--max-tool-output", type=int, default=20_000)
     run.add_argument("--flag-pattern", default=DEFAULT_FLAG_PATTERN)
@@ -258,8 +260,8 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--env-file", default=DEFAULT_ENV_FILE)
     doctor.add_argument("--allow-insecure-key-file", action="store_true")
     doctor.add_argument("--max-seconds", type=float, default=3600.0)
-    doctor.add_argument("--max-model-calls", type=int, default=200)
-    doctor.add_argument("--max-tool-calls", type=int, default=500)
+    doctor.add_argument("--context-window-tokens", type=int, default=1_000_000)
+    doctor.add_argument("--context-reserve-tokens", type=int, default=8_000)
     doctor.add_argument("--verbose", action="store_true")
 
     smoke = subparsers.add_parser(

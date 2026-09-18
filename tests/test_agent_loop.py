@@ -33,8 +33,6 @@ def make_config(root: Path, **overrides: Any) -> AgentConfig:
         workspace_dir=workspace,
         api_key="test",
         max_seconds=60,
-        max_model_calls=10,
-        max_tool_calls=10,
         bash_timeout=10,
         max_tool_output=5000,
     )
@@ -74,18 +72,36 @@ class AgentLoopTests(unittest.TestCase):
             self.assertEqual(result.flag, "flag{abc}")
             self.assertTrue((root / "agent" / "flag.json").exists())
 
-    def test_hard_limit(self) -> None:
+    def test_context_limit(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             model = ScriptedModel(
-                [ModelReply(message={"role": "assistant", "content": "just thinking"})]
+                [
+                    ModelReply(
+                        message={"role": "assistant", "content": "just thinking"},
+                        prompt_tokens=5000,
+                        completion_tokens=100,
+                        total_tokens=5100,
+                    )
+                ]
             )
-            loop = AgentLoop(make_config(root, max_model_calls=1), model=model)
+            loop = AgentLoop(
+                make_config(
+                    root,
+                    context_window_tokens=10_000,
+                    context_reserve_tokens=9_000,
+                ),
+                model=model,
+            )
             result = loop.run()
-            self.assertEqual(result.status, "HARD_LIMIT")
+            self.assertEqual(result.status, "CONTEXT_LIMIT")
             self.assertEqual(result.exit_code, 10)
             escalation = json.loads((root / "agent" / "escalation.json").read_text())
-            self.assertEqual(escalation["reason"], "hard_limit")
+            self.assertEqual(escalation["reason"], "context_limit")
+            self.assertGreaterEqual(
+                escalation["estimated_prompt_tokens"],
+                escalation["context_limit_tokens"],
+            )
 
 
 if __name__ == "__main__":

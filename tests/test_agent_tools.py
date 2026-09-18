@@ -20,8 +20,6 @@ class AgentToolTests(unittest.TestCase):
             workspace_dir=workspace,
             api_key="test",
             max_seconds=60,
-            max_model_calls=10,
-            max_tool_calls=10,
             bash_timeout=10,
             max_tool_output=5000,
         )

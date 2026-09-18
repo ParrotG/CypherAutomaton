@@ -1,42 +1,16 @@
 # IN-CYPHER temporary bridge
 
-Bridge 现支持同一题目下的多条独立持久 TCP 会话，不需要启动真实 Agent。
-`serve` 的主 run 默认管理最多 4 条会话（包括自身），PoW 握手默认串行：
+本项目包含两个可独立使用的组件：
 
-```bash
-uv run python -m incypher_bridge serve --target HOST:PORT \
-  --challenge-id example --run-id primary --max-sessions 4 --max-handshakes 1
+- `incypher_bridge`：面向 IN-CYPHER raw TCP 题目的本地桥接层，负责读取 team key、完成 team-key-bound PoW、维持 upstream 连接，并在本地提供 Agent 可直接连接的 TCP 端口和人类管理接口。
+- `incypher_agent`：配套的最小自主 Agent 单元，通过 DeepSeek-compatible API 驱动一个 model-tool loop，使用 `bash`、`str_replace_editor`、`report_flag` 三个工具解题。
 
-# Run these commands in another terminal.
-uv run python -m incypher_bridge session-create \
-  --challenge-id example --run-id primary --new-run-id worker-a
-uv run python -m incypher_bridge session-create \
-  --challenge-id example --run-id primary --new-run-id worker-b
-uv run python -m incypher_bridge sessions --challenge-id example --run-id primary
-```
+当前适用题型：
 
-创建接口异步返回 JSON；等待目标会话 `state=ready` 且 `agent_endpoint` 非空，
-再连接其独立端口。每条会话仍只接受一个客户端，重复创建相同 id 返回原会话。
-通过原有 `status` / `observe` / `reconnect` / `stop --run-id worker-a` 管理子会话；
-停止主 run 会关闭全部子会话。连接独立不代表远端容器或数据状态独立。
-详细协议和测试方法见 [工程说明第 14 节](docs/工程说明.md#14-bridge-多会话不包含-agent--调度器)。
+- raw TCP + PoW 题目，由 bridge 完成 PoW。
+- web、download、纯文件分析等题目，由 Agent 直接访问或处理，不走 bridge 的 raw TCP 转发。
 
-一个无第三方运行时依赖的临时中间层，用于 IN-CYPHER Hackathon 的 raw-TCP
-题目：
-
-1. 从安全位置读取 team key；
-2. 解析题目连接返回的 `nonce` / `bits`；
-3. 自动完成 team-key-bound proof-of-work；
-4. 维持到题目的 upstream TCP 连接；
-5. 在本地暴露一个 Agent 可直接连接的 TCP 端点；
-6. 按 `challenge_id/run_id` 持久化运行记录，并提供人类可读接口。
-
-官方 ADK / `solver` 尚未发布，因此 PoW 目前按几种最常见编码尝试，默认优先：
-
-```python
-mac = hmac.new(team_key.encode(), nonce.encode(), hashlib.sha256).digest()
-sha256(mac + str(i).encode()).digest()
-```
+---
 
 ## 目录结构
 
@@ -44,73 +18,69 @@ sha256(mac + str(i).encode()).digest()
 .
 ├── pyproject.toml
 ├── uv.toml
-├── .env.local                    # 0600 私密文件，含 CYPHER_TEAM_KEY / DEEPSEEK_API_KEY
+├── .env.local                 # 0600 私密配置
 ├── .env.local.example
 ├── README.md
 ├── docs/
 │   └── 工程说明.md
 ├── src/
-│   ├── bridge.py                 # python bridge.py ... 包装
-│   ├── solver.py                 # 兼容官方 solver.connect
-│   ├── incypher_bridge/          # PoW / TCP bridge
-│   └── incypher_agent/           # minimal model-tool agent unit
-│       ├── cli.py
-│       ├── client.py
-│       ├── config.py
-│       ├── control.py
-│       ├── duration.py
-│       ├── paths.py
-│       ├── pow.py
-│       ├── session.py
-│       └── transcript.py
+│   ├── bridge.py              # python bridge.py ... 包装
+│   ├── solver.py              # 兼容官方 solver.connect 的入口
+│   ├── incypher_bridge/       # PoW / TCP bridge
+│   └── incypher_agent/        # 最小 model-tool Agent
 └── tests/
-    ├── mock_gate.py
-    ├── test_bridge.py
-    └── test_pow.py
 ```
 
-项目采用 `src` 布局，`uv sync` 会把 `src/incypher_bridge`、`solver.py`、
-`bridge.py` 安装进虚拟环境，因此可以在项目根目录直接执行：
-
-```bash
-uv run python -m incypher_bridge ...
-```
+---
 
 ## 安装
+
+需要 Python 3.10+。推荐使用 `uv`：
 
 ```bash
 uv venv --python 3.10
 uv sync
 ```
 
-uv 缓存默认配置在项目内 `.uv-cache/`，适合受限环境。
+`uv` 缓存默认放在项目内 `.uv-cache/`。
 
-## team key
+---
 
-优先读取顺序：
+## 配置 `.env.local`
 
-1. `--team-key-file` / `INCYPHER_TEAM_KEY_FILE`；
-2. 当前环境变量 `CYPHER_TEAM_KEY`、`INCYPHER_TEAM_KEY`、`TEAM_KEY`；
-3. `--env-file` 指定的私密 env 文件，默认 `./.env.local`；
-4. `~/.config/incypher/team_key`。
+复制示例文件并设置权限：
 
-私密文件必须是 `0600`，否则会报错；可用 `--allow-insecure-key-file` 临时绕过。
-team key 只用于本地 HMAC 计算，不会发送到远端，也不会写入日志。
+```bash
+cp .env.local.example .env.local
+chmod 600 .env.local
+```
 
-当前项目使用自己目录下的 `.env.local`，权限为 `0600`。里面需要有：
+必需配置：
 
 ```dotenv
 CYPHER_TEAM_KEY=...
 DEEPSEEK_API_KEY=...
 ```
 
-API key 只从该 `.env.local` 读取，不再回退系统环境变量；缺失或格式非法时会报错退出。
-模型名不在 `.env.local` 中配置；它只通过 `--model` 或 `config.py` 中的默认值决定。
+可选配置：
 
-## 启动一个 challenge / run
+```dotenv
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+CYPHER_THINKING=disabled
+```
 
-`challenge_id` 表示题目，`run_id` 表示一次部署和解题过程。强烈建议每次启动时
-显式指定 `challenge_id`，让同一题目的多次部署/重连都落在同一个 challenge 下。
+配置规则：
+
+- `.env.local` 必须是 `0600`，否则会报错；可用 `--allow-insecure-key-file` 临时绕过。
+- `DEEPSEEK_API_KEY` 只从 `.env.local` 读取，不读取系统环境变量，也没有多级 fallback。
+- API key 缺失、为空、包含空白或明显过短时，CLI 会报错并退出。
+- 模型名不在 `.env.local` 中配置。模型名只通过 `--model` 或 `src/incypher_agent/config.py` 中的默认值设置。
+- `CYPHER_TEAM_KEY` 只用于本地 HMAC 计算，不会发送到远端，也不会写入日志。
+- `DEEPSEEK_API_KEY` 用于调用模型 API，不会写入 Agent 状态文件。
+
+---
+
+## 启动 Bridge
 
 ```bash
 uv run python -m incypher_bridge serve \
@@ -121,157 +91,89 @@ uv run python -m incypher_bridge serve \
   --duration 1h
 ```
 
-`--run-id` 可省略，默认自动生成，例如：
+`--target` 支持以下格式：
 
 ```text
-run-20260916T145544Z-2da959
+HOST:PORT
+[IPv6]:PORT
+nc -v HOST PORT
 ```
 
-也支持平台里粘贴过来的格式：
+常用参数：
 
-```bash
---target "nc -v 47.236.162.54 30092"
+```text
+--challenge-id       稳定题目 ID，建议始终显式指定
+--run-id             本次运行 ID，省略时自动生成
+--description-file   题目描述文件，会复制到 challenge 目录
+--description-text   直接内联题目描述
+--duration           运行时限，例如 30m、1h、01:00:00
+--no-timeout         不设置运行时限
+--bind               本地监听地址，默认 127.0.0.1
+--listen-port        本地 Agent 端口，默认自动分配
+--max-sessions       最大活跃会话数，默认 4
+--max-handshakes     最大并发 PoW 握手数，默认 1
+--no-auto-reconnect  upstream 断开后不自动重连
 ```
 
-成功后会显示：
+启动成功后会输出：
 
 ```text
 Challenge: overflow-ward
-Run:       run-20260916T145544Z-2da959
+Run:       run-...
 State:     ready
 Target:    47.236.162.54:30092
 Agent:     tcp://127.0.0.1:46385
-...
-Challenge description: .cypher_bridge/challenges/overflow-ward/challenge.md
 ```
+
+---
 
 ## Agent 接入
 
-Agent 只连接本地 bridge，不需要 team key，也不需要实现 PoW：
+Agent 连接 bridge 的本地端口，不需要 team key，也不执行 PoW。
 
 ```python
 from solver import connect_bridge
 
 s = connect_bridge(46385)
-print(s.recv(4096))
+banner = s.recv(4096)
 ```
 
-或使用普通 socket：
+也可以直接使用 socket：
 
 ```python
 import socket
+
 s = socket.create_connection(("127.0.0.1", 46385))
 ```
 
-Agent 可以直接从 run 目录读取题目描述：
+题目描述可以通过以下方式交给 Agent：
 
-```text
-.cypher_bridge/challenges/<challenge_id>/challenge.md
-.cypher_bridge/challenges/<challenge_id>/runs/<run_id>/run.json
-```
+- 读取 `.cypher_bridge/challenges/<challenge_id>/challenge.md`
+- 读取 run 目录中的 `run.json`
+- 执行：
+  ```bash
+  uv run python -m incypher_bridge context \
+    --challenge-id overflow-ward \
+    --run-id <run_id> \
+    --json
+  ```
 
-`run.json` 中包含：
+Bridge 不会把题目描述混入 raw TCP 协议流。
 
-- `challenge_id`
-- `run_id`
-- `challenge_name`
-- `category`
-- `description_text`
-- `description_file`
-- `challenge_md`
-- `agent_endpoint`
-- `target`
-- `state`
-- `pow_summary`
-- 收发字节统计
+---
 
-人类或 Agent 也可以直接使用：
+## 人类管理 Bridge
 
 ```bash
-uv run python -m incypher_bridge context \
-  --challenge-id overflow-ward \
-  --run-id <run_id> \
-  --json
-```
-
-
-## Minimal Agent Unit（阶段 A）
-
-阶段 A 实现了一个最小 model-tool loop：
-
-- 工具只有 `bash`、`str_replace_editor`、`report_flag`。
-- 使用真实 DeepSeek API，默认模型 `deepseek-flash`。
-- 不借鉴 smolagents / Temporal。
-- 当前只做硬超限上报：`max_seconds` / `max_model_calls` / `max_tool_calls`。
-- 不做偏离检测、卡死检测、多任务检测，parent scheduler 暂缓。
-- 模型只是普通 assistant message 不会结束，只有 `report_flag` 或硬超限才结束。
-
-先确认 API key 与模型连通：
-
-```bash
-uv run python -m incypher_agent smoke
-```
-
-运行一个已经由 bridge 建立的 run：
-
-```bash
-uv run python -m incypher_agent run \
-  --challenge-id overflow-ward \
-  --run-id <run_id> \
-  --max-seconds 3600 \
-  --max-model-calls 200 \
-  --max-tool-calls 500
-```
-
-它会读取 `run.json` 中的：
-
-- `agent_endpoint`
-- `description_text` / `challenge_md`
-- `challenge_id` / `run_id`
-
-并在以下位置写入状态：
-
-```text
-.cypher_bridge/challenges/<challenge_id>/runs/<run_id>/agent/
-├── state.json
-├── events.jsonl
-├── heartbeat
-├── escalation.json
-├── flag.json
-└── workspace/
-```
-
-硬超限时写入 `escalation.json` 并返回 exit code `10`：
-
-```json
-{
-  "reason": "hard_limit",
-  "detail": "max_seconds exceeded ...",
-  "model_calls": 12,
-  "tool_calls": 34
-}
-```
-
-查看 agent 状态：
-
-```bash
-uv run python -m incypher_agent show \
-  --challenge-id overflow-ward \
-  --run-id <run_id>
-```
-
-## 人类管理接口
-
-```bash
-# 列出所有 challenge / run
+# 列出 challenge / run
 uv run python -m incypher_bridge list
 
-# 查看某个 run 状态
+# 查看 run 状态
 uv run python -m incypher_bridge status \
   --challenge-id overflow-ward \
   --run-id <run_id>
 
-# 查看题目描述、目标、Agent 端点
+# 查看题目描述、目标地址、Agent 端点
 uv run python -m incypher_bridge context \
   --challenge-id overflow-ward \
   --run-id <run_id>
@@ -289,56 +191,231 @@ uv run python -m incypher_bridge send --text 'help\n' \
   --challenge-id overflow-ward \
   --run-id <run_id>
 
-# 强制重连 / 停止
-uv run python -m incypher_bridge reconnect --challenge-id overflow-ward --run-id <run_id>
-uv run python -m incypher_bridge stop --challenge-id overflow-ward --run-id <run_id>
+# 手动重连 / 停止
+uv run python -m incypher_bridge reconnect \
+  --challenge-id overflow-ward \
+  --run-id <run_id>
+
+uv run python -m incypher_bridge stop \
+  --challenge-id overflow-ward \
+  --run-id <run_id>
 ```
 
-不传 `--challenge-id` / `--run-id` 时，会使用 `active.json` 中最近启动的 run。
+不传 `--challenge-id` / `--run-id` 时，默认使用 `active.json` 中最新启动的 run。
+
+---
+
+## 多会话
+
+一个 `serve` 进程可以管理同一题目下的多条独立会话。每条会话有独立的 upstream、本地 Agent 端口、缓存和日志。
+
+创建子会话：
+
+```bash
+uv run python -m incypher_bridge session-create \
+  --challenge-id example \
+  --run-id primary \
+  --new-run-id worker-a
+```
+
+创建接口异步返回；轮询到目标会话 `state=ready` 且 `agent_endpoint` 非空后，让 Agent 连接该端口。
+
+查看会话：
+
+```bash
+uv run python -m incypher_bridge sessions \
+  --challenge-id example \
+  --run-id primary
+```
+
+管理子会话：
+
+```bash
+uv run python -m incypher_bridge status \
+  --challenge-id example --run-id worker-a --json
+
+uv run python -m incypher_bridge reconnect \
+  --challenge-id example --run-id worker-a
+
+uv run python -m incypher_bridge stop \
+  --challenge-id example --run-id worker-a
+```
+
+说明：
+
+- 相同 `run_id` 重复创建是幂等的，不会重复建立 upstream。
+- 每个会话同时只允许一个本地 Agent 连接；第二个连接会收到 `busy`。
+- 子会话共享同一目标地址，但远端容器或题目状态不保证隔离。
+- 停止主 run 会关闭全部子会话。
+- 子会话创建不会修改 `active.json`。
+
+---
+
+## 运行 Agent
+
+真实模型连通性检查：
+
+```bash
+uv run python -m incypher_agent smoke
+```
+
+`smoke` 会真实调用一次模型 API，不做伪装。
+
+先由 bridge 启动一个 run，然后运行 Agent：
+
+```bash
+uv run python -m incypher_agent run \
+  --challenge-id overflow-ward \
+  --run-id <run_id> \
+  --max-seconds 3600 \
+  --context-window-tokens 1000000 \
+  --context-reserve-tokens 8000
+```
+
+Agent 会从 `run.json` 读取：
+
+- `agent_endpoint`
+- `description_text`
+- `challenge_md`
+- `challenge_id`
+- `run_id`
+
+完整参数可查看：
+
+```bash
+uv run python -m incypher_agent run --help
+```
+
+查看 Agent 状态：
+
+```bash
+uv run python -m incypher_agent show \
+  --challenge-id overflow-ward \
+  --run-id <run_id>
+```
+
+不做真实模型调用，仅检查配置：
+
+```bash
+uv run python -m incypher_agent doctor \
+  --challenge-id overflow-ward \
+  --run-id <run_id>
+```
+
+---
+
+## Agent 预算
+
+Agent 的工作预算不使用模型调用次数或工具调用次数上限。调用次数只作为统计信息记录。
+
+工作预算由上下文窗口控制：
+
+```text
+context_limit_tokens =
+    context_window_tokens - context_reserve_tokens
+```
+
+Agent 在每次模型调用前估算下一次发送给 API 的输入 token 总量：
+
+- 如果前一次 API 调用返回了 `prompt_tokens`，用实际值作为基线；
+- 新追加的 model reply、tool result、continuation message 用本地估算；
+- 当估算值达到或超过 `context_limit_tokens` 时，Agent 停止工作。
+
+停止时写入：
+
+```text
+.cypher_bridge/challenges/<challenge_id>/runs/<run_id>/agent/escalation.json
+```
+
+并返回 exit code `10`。
+
+其他结束条件：
+
+- `report_flag`：成功，exit code `0`。
+- `max_seconds` 超时：exit code `10`。
+- 模型调用连续失败：exit code `50`。
+- 用户 Ctrl-C：exit code `130`。
+
+Context 参数：
+
+```text
+--context-window-tokens   模型上下文窗口大小，默认 1000000
+--context-reserve-tokens  为下一次模型输出和工具输出预留，默认 8000
+```
+
+实际模型上下文窗口不同的时候，请按模型能力调整这两个参数。
+
+---
+
+## Bridge 行为
+
+- 每条会话一个 upstream，一个本地 Agent 端口。
+- Agent 断开后 upstream 保持。
+- 没有 Agent 连接时，upstream 返回的数据进入 bounded pending buffer，并在下一个 Agent 连接时重放。
+- upstream 断开时，本地 Agent 会收到 EOF；bridge 默认自动重连并重新过 PoW。
+- 可用 `--no-auto-reconnect` 关闭自动重连，或用 `reconnect` 手动重连。
+- 默认时限 1 小时；`--duration 30m`、`--duration 01:00:00` 或 `--no-timeout` 可调整。
+- 默认只监听 `127.0.0.1`。Agent 在 Docker 中时，建议使用 host 网络或 `host.docker.internal`，不要直接改成 `0.0.0.0`。
+
+---
 
 ## 数据布局
 
 ```text
 .cypher_bridge/
-├── active.json                              # 最近启动的 run
-├── c-<pid>-<rand>.sock                      # 短路径 Unix control socket
+├── active.json
+├── c-<pid>-<rand>.sock
 └── challenges/
     └── <challenge_id>/
-        ├── challenge.json                   # 题目元数据
-        ├── challenge.md                     # 题目描述副本
+        ├── challenge.json
+        ├── challenge.md
         └── runs/
             └── <run_id>/
-                ├── run.json                 # run 状态、PoW、端点、统计
-                ├── events.jsonl             # 机器可读事件
-                ├── transcript.log           # 人类可读事件
-                ├── challenge_to_agent.bin   # 题目 -> Agent 原始流
-                └── agent_to_challenge.bin   # Agent -> 题目原始流
+                ├── run.json
+                ├── events.jsonl
+                ├── transcript.log
+                ├── challenge_to_agent.bin
+                ├── agent_to_challenge.bin
+                └── agent/
+                    ├── state.json
+                    ├── events.jsonl
+                    ├── heartbeat
+                    ├── escalation.json
+                    ├── flag.json
+                    ├── agent.log
+                    ├── artifacts/
+                    └── workspace/
 ```
 
-## 行为说明
+---
 
-- 一个 run 维持一个 upstream，本地端口同一时间只接受一个 Agent；多余的连接会收到
-  `busy`。
-- Agent 断开后 upstream 仍保持；没有 Agent 时收到的 upstream 数据会缓存到
-  `--max-pending-bytes`，并在下一个 Agent 连接时重放。
-- upstream 断开时，本地 Agent 会收到 EOF；bridge 默认自动重连并重新过 PoW。
-  可用 `--no-auto-reconnect` 关闭，或手动 `reconnect`。
-- 默认时限 1 小时，可用 `--duration 30m`、`--duration 01:00:00` 或
-  `--no-timeout`。
-- 默认只绑定 `127.0.0.1`。如果 Agent 在 Docker 中，建议使用 host 网络或
-  `host.docker.internal`，不要随意改成 `0.0.0.0`。
+## 直接使用 solver 形态
 
-## 直接使用官方形态的 solver
+项目提供与官方 helper 形态相近的入口：
 
 ```python
 from solver import connect
 
 s = connect("47.236.162.54", 30092, team_key)
-# 省略 team_key 时从当前工作目录/.env.local 安全加载
+# 省略 team_key 时从当前工作目录 .env.local 安全加载
 s = connect("47.236.162.54", 30092)
 ```
 
-`connect` 返回 `PrefixedSocket`，会重放在 PoW 握手期间已消费掉的初始服务字节。
+`connect` 返回 `PrefixedSocket`，会重放 PoW 握手期间已消费的初始服务字节。
+
+---
+
+## 安全
+
+- `.env.local` 必须为 `0600`。
+- bridge 默认只监听 `127.0.0.1`。
+- control socket 权限为 `0600`。
+- team key 不发送到远端，不写入 metadata，不写入日志。
+- Agent bash 工具的 `HOME` 指向 workspace，且不会通过环境变量继承 team key；但 bash 不是文件系统沙箱，不要把私密文件暴露在可访问路径中。
+- 人类 `send` 会写入真实 upstream；正式自主运行时只给 Agent 本地端口。
+- Agent workspace 和 artifacts 可能包含题目数据，请勿把私密 `.env.local` 放入 workspace。
+
+---
 
 ## 测试
 
@@ -346,12 +423,15 @@ s = connect("47.236.162.54", 30092)
 uv run python -m unittest discover -s tests -v
 ```
 
-包含本地 mock PoW gate、端到端 bridge relay、描述文件与 challenge/run 布局测试。
+测试使用本地 mock PoW gate，不需要真实题目或真实模型。
 
-## 交接文档
+真实目标连接探测：
 
-其他 Agent 继续开发前请先读：
-
-```text
-docs/工程说明.md
+```bash
+uv run python -m tests.bridge_connection_probe \
+  --host HOST --port PORT --sessions 3
 ```
+
+该探测只发送 PoW 答案，不发送题目命令，不调用模型或 Agent。
+
+开发说明和内部设计见 [docs/工程说明.md](docs/工程说明.md)。

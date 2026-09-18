@@ -14,6 +14,8 @@ DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_ENV_FILE = ".env.local"
 DEFAULT_STATE_DIR = ".cypher_bridge"
 DEFAULT_FLAG_PATTERN = r"(?:flag|INCYPHER)\{[^}\r\n]+\}"
+DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000
+DEFAULT_CONTEXT_RESERVE_TOKENS = 8_000
 
 
 class AgentConfigError(RuntimeError):
@@ -50,10 +52,10 @@ class AgentConfig:
     api_key: str = ""
     thinking: str | None = None
     temperature: float | None = None
-    # Hard limits for phase A
+    # Runtime limits
     max_seconds: float = 3600.0
-    max_model_calls: int = 200
-    max_tool_calls: int = 500
+    context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS
+    context_reserve_tokens: int = DEFAULT_CONTEXT_RESERVE_TOKENS
     bash_timeout: float = 60.0
     max_tool_output: int = 20_000
     flag_pattern: str = DEFAULT_FLAG_PATTERN
@@ -67,10 +69,14 @@ class AgentConfig:
             raise AgentConfigError(f"run directory does not exist: {self.run_dir}")
         if self.max_seconds <= 0:
             raise AgentConfigError("max_seconds must be positive")
-        if self.max_model_calls <= 0:
-            raise AgentConfigError("max_model_calls must be positive")
-        if self.max_tool_calls <= 0:
-            raise AgentConfigError("max_tool_calls must be positive")
+        if self.context_window_tokens <= 0:
+            raise AgentConfigError("context_window_tokens must be positive")
+        if self.context_reserve_tokens < 0:
+            raise AgentConfigError("context_reserve_tokens must be non-negative")
+        if self.context_window_tokens <= self.context_reserve_tokens:
+            raise AgentConfigError(
+                "context_window_tokens must be greater than context_reserve_tokens"
+            )
         if self.bash_timeout <= 0:
             raise AgentConfigError("bash_timeout must be positive")
         if self.max_tool_output <= 0:
@@ -134,8 +140,8 @@ def build_agent_config(
     thinking: str | None = None,
     temperature: float | None = None,
     max_seconds: float = 3600.0,
-    max_model_calls: int = 200,
-    max_tool_calls: int = 500,
+    context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
+    context_reserve_tokens: int = DEFAULT_CONTEXT_RESERVE_TOKENS,
     bash_timeout: float = 60.0,
     max_tool_output: int = 20_000,
     flag_pattern: str = DEFAULT_FLAG_PATTERN,
@@ -207,8 +213,8 @@ def build_agent_config(
         thinking=resolved_thinking,
         temperature=temperature,
         max_seconds=float(max_seconds),
-        max_model_calls=int(max_model_calls),
-        max_tool_calls=int(max_tool_calls),
+        context_window_tokens=int(context_window_tokens),
+        context_reserve_tokens=int(context_reserve_tokens),
         bash_timeout=float(bash_timeout),
         max_tool_output=int(max_tool_output),
         flag_pattern=flag_pattern,
