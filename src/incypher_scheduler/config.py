@@ -46,6 +46,11 @@ class SchedulerConfig:
     thinking: str | None = None
     temperature: float | None = None
 
+    sandbox_backend: str = "bwrap"
+    sandbox_tool_root: str | None = None
+    sandbox_bwrap: str = "bwrap"
+    sandbox_network: bool = True
+
     worker_command: tuple[str, ...] = (
         "python",
         "-m",
@@ -74,6 +79,8 @@ class SchedulerConfig:
             raise ValueError("target is required")
         if not self.worker_command:
             raise ValueError("worker_command cannot be empty")
+        if self.sandbox_backend not in ("bwrap", "local"):
+            raise ValueError("sandbox_backend must be one of: bwrap, local")
 
 
 def parse_worker_command(value: str) -> tuple[str, ...]:

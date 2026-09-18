@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import AgentConfig
+from .sandbox import SandboxError, create_sandbox
 from .state import write_tool_artifact
 
 
@@ -118,6 +119,10 @@ class ToolExecutor:
         self.config = config
         self.workspace = Path(config.workspace_dir).resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
+        try:
+            self.sandbox = create_sandbox(config)
+        except SandboxError:
+            raise
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -154,19 +159,12 @@ class ToolExecutor:
         timeout = float(args.get("timeout") or self.config.bash_timeout)
         timeout = max(0.1, min(timeout, 3600.0))
 
-        env = {
-            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-            "HOME": str(self.workspace),
-            "LANG": "C.UTF-8",
-            "LC_ALL": "C.UTF-8",
-            "TERM": "dumb",
-            "PYTHONUNBUFFERED": "1",
-        }
+        prepared = self.sandbox.prepare(command)
         started = time.monotonic()
         process = subprocess.Popen(
-            ["/bin/bash", "-lc", command],
-            cwd=str(self.workspace),
-            env=env,
+            prepared.argv,
+            cwd=prepared.cwd,
+            env=prepared.env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=False,
@@ -209,6 +207,7 @@ class ToolExecutor:
             "stderr_truncated": err_truncated,
             "stdout_artifact": str(stdout_path),
             "stderr_artifact": str(stderr_path),
+            "sandbox": prepared.backend,
         }
         return ToolOutcome(content=json.dumps(payload, ensure_ascii=False))
 

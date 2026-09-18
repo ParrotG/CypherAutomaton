@@ -59,6 +59,10 @@ class AgentConfig:
     bash_timeout: float = 60.0
     max_tool_output: int = 20_000
     flag_pattern: str = DEFAULT_FLAG_PATTERN
+    sandbox_backend: str = "bwrap"
+    sandbox_tool_root: str | None = None
+    sandbox_bwrap: str = "bwrap"
+    sandbox_network: bool = True
     verbose: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -81,6 +85,12 @@ class AgentConfig:
             raise AgentConfigError("bash_timeout must be positive")
         if self.max_tool_output <= 0:
             raise AgentConfigError("max_tool_output must be positive")
+        if self.sandbox_backend not in ("bwrap", "local"):
+            raise AgentConfigError(
+                "sandbox_backend must be one of: bwrap, local"
+            )
+        if self.sandbox_tool_root is not None and not str(self.sandbox_tool_root).strip():
+            raise AgentConfigError("sandbox_tool_root must not be empty")
 
 
 def _read_text_file(path: Path) -> str | None:
@@ -151,6 +161,10 @@ def build_agent_config(
     bash_timeout: float = 60.0,
     max_tool_output: int = 20_000,
     flag_pattern: str = DEFAULT_FLAG_PATTERN,
+    sandbox_backend: str = "bwrap",
+    sandbox_tool_root: str | None = None,
+    sandbox_bwrap: str = "bwrap",
+    sandbox_network: bool = True,
     verbose: bool = False,
     require_api_key: bool = True,
 ) -> AgentConfig:
@@ -260,6 +274,10 @@ def build_agent_config(
         bash_timeout=float(bash_timeout),
         max_tool_output=int(max_tool_output),
         flag_pattern=flag_pattern,
+        sandbox_backend=sandbox_backend,
+        sandbox_tool_root=sandbox_tool_root,
+        sandbox_bwrap=sandbox_bwrap,
+        sandbox_network=sandbox_network,
         verbose=verbose,
         metadata={"bridge_state": context.get("state")},
     )

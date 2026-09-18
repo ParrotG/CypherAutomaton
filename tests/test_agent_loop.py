@@ -35,6 +35,7 @@ def make_config(root: Path, **overrides: Any) -> AgentConfig:
         max_seconds=60,
         bash_timeout=10,
         max_tool_output=5000,
+        sandbox_backend="local",
     )
     values.update(overrides)
     return AgentConfig(**values)

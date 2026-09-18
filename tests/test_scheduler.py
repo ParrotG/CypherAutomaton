@@ -40,6 +40,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
             description_text="scheduler test task",
             env_file=str(self.env_file),
             worker_command=self.worker_command,
+            sandbox_backend="local",
         )
         values.update(overrides)
         return SchedulerConfig(**values)

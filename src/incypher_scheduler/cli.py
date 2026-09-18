@@ -51,6 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--base-url")
     run.add_argument("--thinking")
     run.add_argument("--temperature", type=float)
+    run.add_argument("--sandbox-backend", choices=["bwrap", "local"], default="bwrap")
+    run.add_argument("--sandbox-tool-root")
+    run.add_argument("--sandbox-bwrap", default="bwrap")
+    run.add_argument("--sandbox-no-network", action="store_true")
     run.add_argument(
         "--worker-command-json",
         help=(
@@ -98,6 +102,10 @@ def main(argv: list[str] | None = None) -> int:
             base_url=args.base_url,
             thinking=args.thinking,
             temperature=args.temperature,
+            sandbox_backend=args.sandbox_backend,
+            sandbox_tool_root=args.sandbox_tool_root,
+            sandbox_bwrap=args.sandbox_bwrap,
+            sandbox_network=not args.sandbox_no_network,
             worker_command=worker_command,
         )
         config.validate()

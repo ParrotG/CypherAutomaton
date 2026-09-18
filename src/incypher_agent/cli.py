@@ -21,6 +21,7 @@ from .config import (
 )
 from .loop import AgentLoop, read_agent_state
 from .model import ModelClient, ModelError
+from .toolchain import ToolchainError, default_tool_root, ensure_tool_root
 
 
 def _eprint(*args: Any, **kwargs: Any) -> None:
@@ -38,6 +39,7 @@ def _print_startup(config) -> None:
     print(f"Agent:     {config.agent_endpoint or '-'}")
     print(f"Workspace: {config.workspace_dir}")
     print(f"Run dir:   {config.run_dir}")
+    print(f"Sandbox:   {config.sandbox_backend}")
     context_limit = config.context_window_tokens - config.context_reserve_tokens
     print(
         "Limits: "
@@ -75,6 +77,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             bash_timeout=args.bash_timeout,
             max_tool_output=args.max_tool_output,
             flag_pattern=args.flag_pattern,
+            sandbox_backend=args.sandbox_backend,
+            sandbox_tool_root=args.sandbox_tool_root,
+            sandbox_bwrap=args.sandbox_bwrap,
+            sandbox_network=not args.sandbox_no_network,
             verbose=args.verbose,
         )
     except (AgentConfigError, FileNotFoundError) as exc:
@@ -121,6 +127,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             max_seconds=args.max_seconds,
             context_window_tokens=args.context_window_tokens,
             context_reserve_tokens=args.context_reserve_tokens,
+            sandbox_backend=args.sandbox_backend,
+            sandbox_tool_root=args.sandbox_tool_root,
+            sandbox_bwrap=args.sandbox_bwrap,
+            sandbox_network=not args.sandbox_no_network,
             verbose=args.verbose,
             require_api_key=False,
         )
@@ -266,6 +276,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--bash-timeout", type=float, default=60.0)
     run.add_argument("--max-tool-output", type=int, default=20_000)
     run.add_argument("--flag-pattern", default=DEFAULT_FLAG_PATTERN)
+    run.add_argument("--sandbox-backend", choices=["bwrap", "local"], default="bwrap")
+    run.add_argument("--sandbox-tool-root")
+    run.add_argument("--sandbox-bwrap", default="bwrap")
+    run.add_argument("--sandbox-no-network", action="store_true")
     run.add_argument("--verbose", action="store_true")
     run.add_argument("--quiet", action="store_true")
 
@@ -286,6 +300,10 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--max-seconds", type=float, default=3600.0)
     doctor.add_argument("--context-window-tokens", type=int, default=1_000_000)
     doctor.add_argument("--context-reserve-tokens", type=int, default=8_000)
+    doctor.add_argument("--sandbox-backend", choices=["bwrap", "local"], default="bwrap")
+    doctor.add_argument("--sandbox-tool-root")
+    doctor.add_argument("--sandbox-bwrap", default="bwrap")
+    doctor.add_argument("--sandbox-no-network", action="store_true")
     doctor.add_argument("--verbose", action="store_true")
 
     smoke = subparsers.add_parser(
@@ -297,6 +315,12 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--model", default=None)
     smoke.add_argument("--base-url", default=None)
     smoke.add_argument("--thinking", default=None)
+
+    sandbox_init = subparsers.add_parser(
+        "sandbox-init",
+        help="create/populate the shared read-only Python tool environment",
+    )
+    sandbox_init.add_argument("--tool-root", default=None)
 
     show = subparsers.add_parser("show", help="show agent state for a run")
     show.add_argument("--challenge-id")
@@ -315,6 +339,14 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_run(args)
     if args.command == "doctor":
         return cmd_doctor(args)
+    if args.command == "sandbox-init":
+        try:
+            root = ensure_tool_root(args.tool_root or default_tool_root())
+        except ToolchainError as exc:
+            _eprint(f"error: {exc}")
+            return 1
+        print(json.dumps({"ok": True, "tool_root": str(root)}, ensure_ascii=False))
+        return 0
     if args.command == "smoke":
         return cmd_smoke(args)
     if args.command == "show":

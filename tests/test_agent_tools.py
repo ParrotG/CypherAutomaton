@@ -22,6 +22,7 @@ class AgentToolTests(unittest.TestCase):
             max_seconds=60,
             bash_timeout=10,
             max_tool_output=5000,
+            sandbox_backend="local",
         )
 
     def test_bash_and_editor(self) -> None:

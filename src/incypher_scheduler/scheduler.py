@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 import uvicorn
 
+from incypher_agent.toolchain import default_tool_root, ensure_tool_root
 from incypher_bridge.app import create_app
 from incypher_bridge.client import BridgeClient
 from incypher_bridge.settings import load_settings
@@ -91,9 +92,11 @@ class SimpleScheduler:
         self.config = config
         self._client: BridgeClient | None = None
         self._embedded: EmbeddedBridge | None = None
+        self._sandbox_tool_root: Path | None = None
 
     async def run(self) -> int:
         self.config.workers_root.mkdir(parents=True, exist_ok=True)
+        await self._ensure_sandbox_tools()
         await self._start_bridge()
         started = 0
         running: dict[asyncio.Task[int], WorkerProcess] = {}
@@ -158,6 +161,18 @@ class SimpleScheduler:
                 with contextlib.suppress(Exception):
                     await self._cleanup_worker(worker, terminate=True)
             await self._stop_bridge()
+
+    async def _ensure_sandbox_tools(self) -> None:
+        if self.config.sandbox_backend != "bwrap":
+            return
+        tool_root = (
+            Path(self.config.sandbox_tool_root).expanduser().resolve()
+            if self.config.sandbox_tool_root
+            else default_tool_root()
+        )
+        self._sandbox_tool_root = await asyncio.to_thread(
+            ensure_tool_root, tool_root
+        )
 
     # ------------------------------------------------------------------
     # Bridge lifecycle
@@ -270,9 +285,17 @@ class SimpleScheduler:
                 str(self.config.worker_bash_timeout),
                 "--max-tool-output",
                 str(self.config.worker_max_tool_output),
+                "--sandbox-backend",
+                self.config.sandbox_backend,
+                "--sandbox-bwrap",
+                self.config.sandbox_bwrap,
                 "--quiet",
             ]
         )
+        if self.config.sandbox_network is False:
+            command.append("--sandbox-no-network")
+        if self._sandbox_tool_root is not None:
+            command.extend(["--sandbox-tool-root", str(self._sandbox_tool_root)])
         if self.config.challenge_name:
             command.extend(["--challenge-name", self.config.challenge_name])
         if self.config.category:
