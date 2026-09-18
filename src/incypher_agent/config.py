@@ -135,6 +135,12 @@ def build_agent_config(
     workspace_dir: str | Path | None = None,
     env_file: str | Path | None = DEFAULT_ENV_FILE,
     allow_insecure_file: bool = False,
+    agent_endpoint: str | None = None,
+    description_text: str | None = None,
+    description_file: str | Path | None = None,
+    challenge_name: str | None = None,
+    category: str | None = None,
+    target: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
     thinking: str | None = None,
@@ -148,10 +154,11 @@ def build_agent_config(
     verbose: bool = False,
     require_api_key: bool = True,
 ) -> AgentConfig:
-    """Resolve bridge context and model provider settings.
+    """Resolve task context and model provider settings.
 
-    ``run_dir`` may be supplied directly; otherwise it is resolved from
-    ``challenge_id`` / ``run_id`` or the active run pointer.
+    ``run_dir`` is the agent state directory.  When ``agent_endpoint`` is
+    supplied, the agent runs independently of the old bridge ``run.json``
+    format.  Otherwise ``run.json`` is loaded for backward compatibility.
     """
 
     env_values = load_env_values(
@@ -160,23 +167,49 @@ def build_agent_config(
         required=require_api_key,
     )
 
+    external_endpoint = agent_endpoint is not None
     if run_dir is not None:
         resolved_run_dir = Path(run_dir).expanduser().resolve()
+    elif external_endpoint:
+        raise AgentConfigError(
+            "run_dir is required when agent_endpoint is supplied"
+        )
     else:
         resolved_run_dir = resolve_run_dir(
             Path(state_dir), challenge_id=challenge_id, run_id=run_id
         )
 
-    context = load_run_context(resolved_run_dir)
+    context: dict[str, Any] = {}
+    if not external_endpoint or (resolved_run_dir / "run.json").exists():
+        context = load_run_context(resolved_run_dir)
+
     resolved_challenge_id = (
-        challenge_id or context.get("challenge_id") or resolved_run_dir.parent.parent.name
+        challenge_id
+        or context.get("challenge_id")
+        or (resolved_run_dir.parent.name if resolved_run_dir.parent != resolved_run_dir else None)
+        or "task"
     )
     resolved_run_id = run_id or context.get("run_id") or resolved_run_dir.name
 
-    description_text = context.get("description_text")
+    resolved_description_file: str | None = None
+    resolved_description_from_file: str | None = None
+    if description_file is not None:
+        source = Path(description_file).expanduser().resolve()
+        if not source.exists() or not source.is_file():
+            raise FileNotFoundError(f"description file not found: {source}")
+        resolved_description_file = str(source)
+        resolved_description_from_file = source.read_text(encoding="utf-8")
+
+    resolved_description = (
+        description_text
+        if description_text is not None
+        else resolved_description_from_file
+        if resolved_description_from_file is not None
+        else context.get("description_text")
+    )
     challenge_md = context.get("challenge_md")
-    if not description_text and challenge_md and Path(challenge_md).exists():
-        description_text = _read_text_file(Path(challenge_md))
+    if not resolved_description and challenge_md and Path(challenge_md).exists():
+        resolved_description = _read_text_file(Path(challenge_md))
 
     resolved_workspace = (
         Path(workspace_dir).expanduser().resolve()
@@ -196,17 +229,26 @@ def build_agent_config(
         thinking or env_values.get("CYPHER_THINKING", "").strip() or None
     )
 
+    resolved_agent_endpoint = agent_endpoint or context.get("agent_endpoint")
+    resolved_challenge_name = challenge_name or context.get("challenge_name")
+    resolved_category = category or context.get("category")
+    resolved_target = target or context.get("target")
+    resolved_challenge_md = (
+        resolved_description_file
+        or (str(challenge_md) if challenge_md else None)
+    )
+
     config = AgentConfig(
         challenge_id=str(resolved_challenge_id),
         run_id=str(resolved_run_id),
         run_dir=resolved_run_dir,
         workspace_dir=resolved_workspace,
-        agent_endpoint=context.get("agent_endpoint"),
-        challenge_name=context.get("challenge_name"),
-        category=context.get("category"),
-        description_text=description_text,
-        challenge_md=str(challenge_md) if challenge_md else None,
-        target=context.get("target"),
+        agent_endpoint=resolved_agent_endpoint,
+        challenge_name=resolved_challenge_name,
+        category=resolved_category,
+        description_text=resolved_description,
+        challenge_md=resolved_challenge_md,
+        target=resolved_target,
         model=resolved_model,
         base_url=resolved_base_url or DEFAULT_BASE_URL,
         api_key=resolved_api_key or "",

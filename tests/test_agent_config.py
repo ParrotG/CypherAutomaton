@@ -77,6 +77,34 @@ class AgentConfigTests(unittest.TestCase):
             )
             self.assertEqual(config.model, DEFAULT_MODEL)
 
+    def test_external_endpoint_bypasses_run_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = root / "external-worker"
+            run_dir.mkdir()
+            env_file = self.write_env_file(
+                root, "DEEPSEEK_API_KEY=from-env-file-1234567890\n"
+            )
+            config = build_agent_config(
+                run_dir=run_dir,
+                env_file=env_file,
+                require_api_key=True,
+                agent_endpoint="tcp://127.0.0.1:45678",
+                challenge_id="task-1",
+                run_id="worker-1",
+                challenge_name="Test Task",
+                category="pwn",
+                target="47.236.162.54:30068",
+                description_text="external task description",
+            )
+            self.assertEqual(config.agent_endpoint, "tcp://127.0.0.1:45678")
+            self.assertEqual(config.challenge_id, "task-1")
+            self.assertEqual(config.run_id, "worker-1")
+            self.assertEqual(config.challenge_name, "Test Task")
+            self.assertEqual(config.category, "pwn")
+            self.assertEqual(config.target, "47.236.162.54:30068")
+            self.assertEqual(config.description_text, "external task description")
+
     def test_invalid_api_key_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

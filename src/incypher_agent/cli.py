@@ -59,6 +59,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             workspace_dir=args.workspace,
             env_file=args.env_file,
             allow_insecure_file=args.allow_insecure_key_file,
+            agent_endpoint=args.agent_endpoint,
+            description_text=args.description_text,
+            description_file=args.description_file,
+            challenge_name=args.challenge_name,
+            category=args.category,
+            target=args.target,
             model=args.model,
             base_url=args.base_url,
             thinking=args.thinking,
@@ -106,6 +112,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             workspace_dir=args.workspace,
             env_file=args.env_file,
             allow_insecure_file=args.allow_insecure_key_file,
+            agent_endpoint=args.agent_endpoint,
+            description_text=args.description_text,
+            description_file=args.description_file,
+            challenge_name=args.challenge_name,
+            category=args.category,
+            target=args.target,
             max_seconds=args.max_seconds,
             context_window_tokens=args.context_window_tokens,
             context_reserve_tokens=args.context_reserve_tokens,
@@ -234,6 +246,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--challenge-id")
     run.add_argument("--run-id")
     run.add_argument("--run-dir")
+    run.add_argument("--agent-endpoint", help="External connector endpoint, e.g. tcp://127.0.0.1:46385")
+    run.add_argument("--description-file")
+    run.add_argument("--description-text")
+    run.add_argument("--challenge-name")
+    run.add_argument("--category")
+    run.add_argument("--target")
     run.add_argument("--state-dir", default=DEFAULT_STATE_DIR)
     run.add_argument("--workspace")
     run.add_argument("--env-file", default=DEFAULT_ENV_FILE)
@@ -255,6 +273,12 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--challenge-id")
     doctor.add_argument("--run-id")
     doctor.add_argument("--run-dir")
+    doctor.add_argument("--agent-endpoint")
+    doctor.add_argument("--description-file")
+    doctor.add_argument("--description-text")
+    doctor.add_argument("--challenge-name")
+    doctor.add_argument("--category")
+    doctor.add_argument("--target")
     doctor.add_argument("--state-dir", default=DEFAULT_STATE_DIR)
     doctor.add_argument("--workspace")
     doctor.add_argument("--env-file", default=DEFAULT_ENV_FILE)
