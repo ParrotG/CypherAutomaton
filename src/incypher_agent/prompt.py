@@ -28,12 +28,14 @@ def build_initial_messages(config: AgentConfig) -> list[dict[str, str]]:
     if not description:
         description = "(no challenge description provided)"
 
+    endpoint = config.agent_endpoint or "(direct task, no bridge endpoint)"
     user = f"""Challenge: {config.challenge_id}
 Run: {config.run_id}
 Name: {config.challenge_name or config.challenge_id}
 Category: {config.category or "unknown"}
-Local agent endpoint: {config.agent_endpoint or "(bridge endpoint not recorded)"}
-Workspace: {config.workspace_dir}
+Target: {config.target or "(not provided)"}
+Local agent endpoint: {endpoint}
+Sandbox workspace: /workspace
 
 Flag pattern: {config.flag_pattern}
 Use `report_flag` once you have a verified candidate.

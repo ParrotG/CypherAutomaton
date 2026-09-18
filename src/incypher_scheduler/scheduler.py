@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import json
 import os
+import shutil
 import socket
 import sys
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from incypher_bridge.client import BridgeClient
 from incypher_bridge.settings import load_settings
 
 from .config import SchedulerConfig, safe_component
+from .targets import TargetKind, TargetSpec, classify_target
 
 
 class SchedulerError(RuntimeError):
@@ -93,15 +95,22 @@ class SimpleScheduler:
         self._client: BridgeClient | None = None
         self._embedded: EmbeddedBridge | None = None
         self._sandbox_tool_root: Path | None = None
+        self.target_spec: TargetSpec = classify_target(config.target)
 
     async def run(self) -> int:
         self.config.workers_root.mkdir(parents=True, exist_ok=True)
         await self._ensure_sandbox_tools()
-        await self._start_bridge()
+        if self.target_spec.kind == TargetKind.RAW_TCP:
+            await self._start_bridge()
         started = 0
         running: dict[asyncio.Task[int], WorkerProcess] = {}
         success = False
-        self._log("scheduler_start", task_id=self.config.task_id, target=self.config.target)
+        self._log(
+            "scheduler_start",
+            task_id=self.config.task_id,
+            target=self.config.target,
+            target_kind=self.target_spec.kind.value,
+        )
         try:
             while True:
                 while (
@@ -207,33 +216,55 @@ class SimpleScheduler:
     # Worker lifecycle
     # ------------------------------------------------------------------
     async def _spawn_worker(self, index: int) -> WorkerProcess:
-        assert self._client is not None
         worker_id = f"w{index:04d}"
         worker_dir = self.config.workers_root / worker_id
         worker_dir.mkdir(parents=True, exist_ok=True)
-        connector_id = safe_component(
-            f"{self.config.task_id[:32]}-{worker_id}", fallback=f"connector-{index}"
-        )[:64]
+        connector_id = ""
+        endpoint: str | None = None
+        worker_target = self.target_spec.normalized
 
-        await self._client.create_connector(
-            connector_id=connector_id,
-            target=self.config.target,
-            auto_reconnect=True,
-            metadata={
-                "task_id": self.config.task_id,
-                "worker_id": worker_id,
-            },
+        if self.target_spec.kind == TargetKind.RAW_TCP:
+            if self._client is None:
+                raise SchedulerError("bridge client is not available")
+            connector_id = safe_component(
+                f"{self.config.task_id[:32]}-{worker_id}",
+                fallback=f"connector-{index}",
+            )[:64]
+            await self._client.create_connector(
+                connector_id=connector_id,
+                target=self.target_spec.normalized,
+                auto_reconnect=True,
+                metadata={
+                    "task_id": self.config.task_id,
+                    "worker_id": worker_id,
+                },
+            )
+            try:
+                info = await self._client.wait_ready(connector_id, timeout=30.0)
+                endpoint = info.get("endpoint")
+                if not endpoint:
+                    raise SchedulerError(
+                        f"connector {connector_id} has no endpoint"
+                    )
+            except BaseException:
+                with contextlib.suppress(Exception):
+                    await self._client.delete_connector(connector_id)
+                raise
+        elif self.target_spec.kind == TargetKind.FILES:
+            await asyncio.to_thread(self._copy_target_files, worker_dir)
+            worker_target = "/workspace/challenge_files"
+
+        command = self._worker_command(
+            worker_id,
+            worker_dir,
+            endpoint,
+            worker_target,
         )
+        log_path = worker_dir / "worker.log"
+        log_handle = log_path.open("ab", buffering=0)
+        env = dict(os.environ)
+        env["PYTHONUNBUFFERED"] = "1"
         try:
-            info = await self._client.wait_ready(connector_id, timeout=30.0)
-            endpoint = info.get("endpoint")
-            if not endpoint:
-                raise SchedulerError(f"connector {connector_id} has no endpoint")
-            command = self._worker_command(worker_id, worker_dir, endpoint)
-            log_path = worker_dir / "worker.log"
-            log_handle = log_path.open("ab", buffering=0)
-            env = dict(os.environ)
-            env["PYTHONUNBUFFERED"] = "1"
             process = await asyncio.create_subprocess_exec(
                 *command,
                 stdout=log_handle,
@@ -242,8 +273,10 @@ class SimpleScheduler:
                 env=env,
             )
         except BaseException:
-            with contextlib.suppress(Exception):
-                await self._client.delete_connector(connector_id)
+            log_handle.close()
+            if connector_id and self._client is not None:
+                with contextlib.suppress(Exception):
+                    await self._client.delete_connector(connector_id)
             raise
         return WorkerProcess(
             worker_id=worker_id,
@@ -253,11 +286,26 @@ class SimpleScheduler:
             log_handle=log_handle,
         )
 
+    def _copy_target_files(self, worker_dir: Path) -> None:
+        if not self.target_spec.local_path:
+            raise SchedulerError("file target has no local path")
+        source = Path(self.target_spec.local_path)
+        destination = worker_dir / "agent" / "workspace" / "challenge_files"
+        if destination.exists():
+            shutil.rmtree(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, destination, dirs_exist_ok=True)
+        else:
+            destination.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination / source.name)
+
     def _worker_command(
         self,
         worker_id: str,
         worker_dir: Path,
-        endpoint: str,
+        endpoint: str | None,
+        worker_target: str,
     ) -> list[str]:
         command = [
             sys.executable if part == "python" else part
@@ -271,8 +319,12 @@ class SimpleScheduler:
                 self.config.task_id,
                 "--run-id",
                 worker_id,
-                "--agent-endpoint",
-                endpoint,
+            ]
+        )
+        if endpoint:
+            command.extend(["--agent-endpoint", endpoint])
+        command.extend(
+            [
                 "--env-file",
                 str(self.config.env_file),
                 "--max-seconds",
@@ -300,7 +352,7 @@ class SimpleScheduler:
             command.extend(["--challenge-name", self.config.challenge_name])
         if self.config.category:
             command.extend(["--category", self.config.category])
-        command.extend(["--target", self.config.target])
+        command.extend(["--target", worker_target])
         if self.config.description_file:
             command.extend(["--description-file", str(Path(self.config.description_file).resolve())])
         elif self.config.description_text is not None:
@@ -335,7 +387,7 @@ class SimpleScheduler:
             worker.log_handle.close()
         except Exception:
             pass
-        if self._client is not None:
+        if self._client is not None and worker.connector_id:
             with contextlib.suppress(Exception):
                 await self._client.delete_connector(worker.connector_id)
 

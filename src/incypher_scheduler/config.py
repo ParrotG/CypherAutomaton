@@ -77,6 +77,9 @@ class SchedulerConfig:
             )
         if not self.target.strip():
             raise ValueError("target is required")
+        from .targets import classify_target
+
+        classify_target(self.target)
         if not self.worker_command:
             raise ValueError("worker_command cannot be empty")
         if self.sandbox_backend not in ("bwrap", "local"):

@@ -170,9 +170,10 @@ def build_agent_config(
 ) -> AgentConfig:
     """Resolve task context and model provider settings.
 
-    ``run_dir`` is the agent state directory.  When ``agent_endpoint`` is
-    supplied, the agent runs independently of the old bridge ``run.json``
-    format.  Otherwise ``run.json`` is loaded for backward compatibility.
+    ``run_dir`` is the agent state directory.  When ``agent_endpoint`` or a
+    direct task ``target`` is supplied, the agent runs independently of the
+    old bridge ``run.json`` format.  Otherwise ``run.json`` is loaded for
+    backward compatibility.
     """
 
     env_values = load_env_values(
@@ -182,11 +183,19 @@ def build_agent_config(
     )
 
     external_endpoint = agent_endpoint is not None
+    standalone_task = (
+        not external_endpoint
+        and (
+            target is not None
+            or description_text is not None
+            or description_file is not None
+        )
+    )
     if run_dir is not None:
         resolved_run_dir = Path(run_dir).expanduser().resolve()
-    elif external_endpoint:
+    elif external_endpoint or standalone_task:
         raise AgentConfigError(
-            "run_dir is required when agent_endpoint is supplied"
+            "run_dir is required when agent_endpoint or target is supplied"
         )
     else:
         resolved_run_dir = resolve_run_dir(
@@ -194,7 +203,10 @@ def build_agent_config(
         )
 
     context: dict[str, Any] = {}
-    if not external_endpoint or (resolved_run_dir / "run.json").exists():
+    run_json = resolved_run_dir / "run.json"
+    if run_json.exists():
+        context = load_run_context(resolved_run_dir)
+    elif not external_endpoint and not standalone_task:
         context = load_run_context(resolved_run_dir)
 
     resolved_challenge_id = (

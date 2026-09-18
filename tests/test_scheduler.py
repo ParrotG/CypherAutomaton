@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from incypher_scheduler.config import SchedulerConfig, parse_worker_command
 from incypher_scheduler.scheduler import SimpleScheduler
+from incypher_scheduler.targets import TargetKind, classify_target
 from tests.mock_gate import MockGate
 
 
@@ -52,6 +53,50 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(code, 10)
         workers = sorted(path.name for path in (self.root / "scheduler" / "tasks" / "task-test" / "workers").glob("w*"))
         self.assertEqual(workers, ["w0001", "w0002"])
+
+    def test_classify_target_types(self) -> None:
+        self.assertEqual(classify_target("127.0.0.1:1234").kind, TargetKind.RAW_TCP)
+        self.assertEqual(classify_target("https://example.com/x").kind, TargetKind.URL)
+        self.assertEqual(classify_target(str(self.root)).kind, TargetKind.FILES)
+
+    async def test_url_target_runs_without_bridge(self) -> None:
+        with patch.dict(os.environ, {"FAKE_SCHEDULER_EXIT_CODE": "0"}):
+            scheduler = SimpleScheduler(
+                self.make_config(
+                    target="https://example.com/challenge",
+                    max_concurrent_workers=1,
+                    max_total_workers=2,
+                )
+            )
+            code = await scheduler.run()
+        self.assertEqual(code, 0)
+        worker_dir = self.root / "scheduler" / "tasks" / "task-test" / "workers" / "w0001"
+        payload = json.loads((worker_dir / "fake_worker.json").read_text())
+        self.assertIn("--target", payload["argv"])
+        self.assertIn("https://example.com/challenge", payload["argv"])
+        self.assertNotIn("--agent-endpoint", payload["argv"])
+
+    async def test_file_target_copies_files_and_runs_without_bridge(self) -> None:
+        source = self.root / "challenge-files"
+        source.mkdir()
+        (source / "message.txt").write_text("file-target", encoding="utf-8")
+        with patch.dict(os.environ, {"FAKE_SCHEDULER_EXIT_CODE": "0"}):
+            scheduler = SimpleScheduler(
+                self.make_config(
+                    target=str(source),
+                    max_concurrent_workers=1,
+                    max_total_workers=1,
+                )
+            )
+            code = await scheduler.run()
+        self.assertEqual(code, 0)
+        worker_dir = self.root / "scheduler" / "tasks" / "task-test" / "workers" / "w0001"
+        copied = worker_dir / "agent" / "workspace" / "challenge_files" / "message.txt"
+        self.assertEqual(copied.read_text(encoding="utf-8"), "file-target")
+        payload = json.loads((worker_dir / "fake_worker.json").read_text())
+        self.assertIn("--target", payload["argv"])
+        self.assertIn("/workspace/challenge_files", payload["argv"])
+        self.assertNotIn("--agent-endpoint", payload["argv"])
 
     async def test_success_stops_scheduler(self) -> None:
         with patch.dict(os.environ, {"FAKE_SCHEDULER_EXIT_CODE": "0"}):

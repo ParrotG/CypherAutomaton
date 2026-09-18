@@ -27,7 +27,14 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     run = subparsers.add_parser("run", help="start a task and maintain workers")
     run.add_argument("--task-id", default=None)
-    run.add_argument("--target", required=True, help="Raw TCP target: HOST:PORT")
+    run.add_argument(
+        "--target",
+        required=True,
+        help=(
+            "Task target: raw TCP HOST:PORT / `nc HOST PORT`, "
+            "HTTP(S) URL, or existing file/directory path."
+        ),
+    )
     run.add_argument("--description-file")
     run.add_argument("--description-text")
     run.add_argument("--challenge-name")

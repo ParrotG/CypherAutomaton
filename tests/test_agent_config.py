@@ -105,6 +105,27 @@ class AgentConfigTests(unittest.TestCase):
             self.assertEqual(config.target, "47.236.162.54:30068")
             self.assertEqual(config.description_text, "external task description")
 
+    def test_standalone_target_without_run_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = root / "standalone-worker"
+            run_dir.mkdir()
+            env_file = self.write_env_file(
+                root, "DEEPSEEK_API_KEY=from-env-file-1234567890\n"
+            )
+            config = build_agent_config(
+                run_dir=run_dir,
+                env_file=env_file,
+                require_api_key=True,
+                challenge_id="url-task",
+                run_id="worker-1",
+                target="https://example.com/challenge",
+                description_text="url task description",
+            )
+            self.assertIsNone(config.agent_endpoint)
+            self.assertEqual(config.target, "https://example.com/challenge")
+            self.assertEqual(config.description_text, "url task description")
+
     def test_invalid_api_key_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
