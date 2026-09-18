@@ -102,8 +102,10 @@ team key 只用于本地 HMAC 计算，不会发送到远端，也不会写入�
 ```dotenv
 CYPHER_TEAM_KEY=...
 DEEPSEEK_API_KEY=...
-CYPHER_MODEL=deepseek-flash
 ```
+
+API key 只从该 `.env.local` 读取，不再回退系统环境变量；缺失或格式非法时会报错退出。
+模型名不在 `.env.local` 中配置；它只通过 `--model` 或 `config.py` 中的默认值决定。
 
 ## 启动一个 challenge / run
 

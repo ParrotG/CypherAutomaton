@@ -9,13 +9,16 @@ from pathlib import Path
 from typing import Any
 
 from .config import (
+    DEFAULT_BASE_URL,
     DEFAULT_ENV_FILE,
     DEFAULT_FLAG_PATTERN,
+    DEFAULT_MODEL,
     DEFAULT_STATE_DIR,
     AgentConfigError,
     build_agent_config,
+    load_env_values,
+    validate_api_key,
 )
-from .config import load_env_values
 from .loop import AgentLoop, read_agent_state
 from .model import ModelClient, ModelError
 
@@ -56,7 +59,6 @@ def cmd_run(args: argparse.Namespace) -> int:
             allow_insecure_file=args.allow_insecure_key_file,
             model=args.model,
             base_url=args.base_url,
-            api_key=None,
             thinking=args.thinking,
             temperature=args.temperature,
             max_seconds=args.max_seconds,
@@ -132,17 +134,22 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 def cmd_smoke(args: argparse.Namespace) -> int:
     """Make one real model call to validate key/base URL/model/tool calling."""
 
-    from .config import DEFAULT_BASE_URL, DEFAULT_MODEL, DEFAULT_ENV_FILE
-
-    env_values = load_env_values(
-        args.env_file, allow_insecure_file=args.allow_insecure_key_file
-    )
-    api_key = (env_values.get("DEEPSEEK_API_KEY") or env_values.get("OPENAI_API_KEY") or "").strip()
-    if not api_key:
-        _eprint("error: DEEPSEEK_API_KEY is not set in the environment or .env.local")
+    try:
+        env_values = load_env_values(
+            args.env_file,
+            allow_insecure_file=args.allow_insecure_key_file,
+            required=True,
+        )
+        api_key = validate_api_key(env_values.get("DEEPSEEK_API_KEY", ""))
+    except AgentConfigError as exc:
+        _eprint(f"error: {exc}")
         return 2
-    model = args.model or env_values.get("CYPHER_MODEL") or DEFAULT_MODEL
-    base_url = args.base_url or env_values.get("DEEPSEEK_BASE_URL") or DEFAULT_BASE_URL
+    model = args.model or DEFAULT_MODEL
+    base_url = (
+        args.base_url
+        or env_values.get("DEEPSEEK_BASE_URL", "").strip()
+        or DEFAULT_BASE_URL
+    )
     client = ModelClient(
         api_key=api_key,
         base_url=base_url,

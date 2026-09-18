@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from incypher_bridge.config import TeamKeyError, read_env_file
 from incypher_bridge.paths import resolve_run_dir
@@ -19,6 +18,17 @@ DEFAULT_FLAG_PATTERN = r"(?:flag|INCYPHER)\{[^}\r\n]+\}"
 
 class AgentConfigError(RuntimeError):
     """Raised when the agent unit cannot be configured safely."""
+
+
+def validate_api_key(value: str) -> str:
+    """Validate the API key loaded from ``.env.local``."""
+
+    key = (value or "").strip()
+    if len(key) < 16 or any(char.isspace() for char in key):
+        raise AgentConfigError(
+            "DEEPSEEK_API_KEY is missing or invalid in .env.local"
+        )
+    return key
 
 
 @dataclass
@@ -51,10 +61,8 @@ class AgentConfig:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def validate(self, *, require_api_key: bool = True) -> None:
-        if require_api_key and not self.api_key.strip():
-            raise AgentConfigError(
-                "DEEPSEEK_API_KEY is not set. Put it in .env.local or the environment."
-            )
+        if require_api_key:
+            validate_api_key(self.api_key)
         if not self.run_dir.exists():
             raise AgentConfigError(f"run directory does not exist: {self.run_dir}")
         if self.max_seconds <= 0:
@@ -76,39 +84,25 @@ def _read_text_file(path: Path) -> str | None:
         return None
 
 
-def _first_value(
-    values: Mapping[str, str],
-    names: tuple[str, ...],
-    default: str | None = None,
-) -> str | None:
-    for name in names:
-        value = values.get(name)
-        if value and value.strip():
-            return value.strip()
-    return default
-
-
 def load_env_values(
     env_file: str | Path | None = None,
     *,
     allow_insecure_file: bool = False,
+    required: bool = True,
 ) -> dict[str, str]:
-    """Load ``.env.local`` without printing or exporting secret values."""
+    """Load agent settings from the selected private env file only."""
 
     env_path = Path(env_file or DEFAULT_ENV_FILE).expanduser()
-    values: dict[str, str] = dict(os.environ)
-    if not env_path.exists():
-        return values
     try:
-        file_values = read_env_file(
-            env_path, allow_insecure_file=allow_insecure_file
+        return dict(
+            read_env_file(
+                env_path,
+                allow_insecure_file=allow_insecure_file,
+                required=required,
+            )
         )
     except TeamKeyError as exc:
         raise AgentConfigError(str(exc)) from exc
-    for key, value in file_values.items():
-        # Real process environment wins, matching the bridge's convention.
-        values.setdefault(key, value)
-    return values
 
 
 def load_run_context(run_dir: Path) -> dict[str, Any]:
@@ -137,7 +131,6 @@ def build_agent_config(
     allow_insecure_file: bool = False,
     model: str | None = None,
     base_url: str | None = None,
-    api_key: str | None = None,
     thinking: str | None = None,
     temperature: float | None = None,
     max_seconds: float = 3600.0,
@@ -155,7 +148,11 @@ def build_agent_config(
     ``challenge_id`` / ``run_id`` or the active run pointer.
     """
 
-    env_values = load_env_values(env_file, allow_insecure_file=allow_insecure_file)
+    env_values = load_env_values(
+        env_file,
+        allow_insecure_file=allow_insecure_file,
+        required=require_api_key,
+    )
 
     if run_dir is not None:
         resolved_run_dir = Path(run_dir).expanduser().resolve()
@@ -182,17 +179,15 @@ def build_agent_config(
     )
     resolved_workspace.mkdir(parents=True, exist_ok=True)
 
-    resolved_model = model or _first_value(
-        env_values, ("CYPHER_MODEL", "AGENT_MODEL", "DEEPSEEK_MODEL"), DEFAULT_MODEL
+    resolved_model = model or DEFAULT_MODEL
+    resolved_base_url = (
+        base_url
+        or env_values.get("DEEPSEEK_BASE_URL", "").strip()
+        or DEFAULT_BASE_URL
     )
-    resolved_base_url = base_url or _first_value(
-        env_values, ("DEEPSEEK_BASE_URL", "CYPHER_MODEL_BASE_URL"), DEFAULT_BASE_URL
-    )
-    resolved_api_key = api_key or _first_value(
-        env_values, ("DEEPSEEK_API_KEY", "OPENAI_API_KEY"), ""
-    )
-    resolved_thinking = thinking or _first_value(
-        env_values, ("CYPHER_THINKING", "DEEPSEEK_THINKING"), None
+    resolved_api_key = env_values.get("DEEPSEEK_API_KEY", "").strip()
+    resolved_thinking = (
+        thinking or env_values.get("CYPHER_THINKING", "").strip() or None
     )
 
     config = AgentConfig(
@@ -206,7 +201,7 @@ def build_agent_config(
         description_text=description_text,
         challenge_md=str(challenge_md) if challenge_md else None,
         target=context.get("target"),
-        model=resolved_model or DEFAULT_MODEL,
+        model=resolved_model,
         base_url=resolved_base_url or DEFAULT_BASE_URL,
         api_key=resolved_api_key or "",
         thinking=resolved_thinking,
