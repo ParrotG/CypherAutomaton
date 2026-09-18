@@ -34,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--category")
     run.add_argument("--state-dir", default=".cypher_bridge/scheduler")
     run.add_argument("--max-concurrent-workers", type=int, default=2)
-    run.add_argument("--max-total-workers", type=int, default=8)
+    run.add_argument("--max-total-workers", type=int, default=4)
     run.add_argument("--worker-max-seconds", type=float, default=3600.0)
     run.add_argument("--worker-context-window-tokens", type=int, default=1_000_000)
     run.add_argument("--worker-context-reserve-tokens", type=int, default=8_000)
