@@ -140,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
                 "ok": code == 0,
                 "exit_code": code,
                 "task_id": config.task_id,
+                "attempt_id": scheduler.attempt_id,
+                "attempt_dir": str(scheduler.attempt_root),
                 "state_dir": str(config.task_root),
             },
             ensure_ascii=False,

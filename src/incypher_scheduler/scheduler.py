@@ -29,7 +29,7 @@ from incypher_bridge.app import create_app
 from incypher_bridge.client import BridgeClient
 from incypher_bridge.settings import load_settings
 
-from .config import SchedulerConfig, safe_component
+from .config import SchedulerConfig, generate_attempt_id, safe_component
 from .targets import TargetKind, TargetSpec, classify_target
 
 
@@ -100,11 +100,14 @@ class SimpleScheduler:
         self._embedded: EmbeddedBridge | None = None
         self._sandbox_tool_root: Path | None = None
         self.target_spec: TargetSpec = classify_target(config.target)
+        self.attempt_id = generate_attempt_id()
+        self.attempt_root = config.attempts_root / self.attempt_id
+        self.workers_root = self.attempt_root / "workers"
         self._blackboard_dir: Path | None = None
         self._blackboard_visible_path: str = "/blackboard"
 
     async def run(self) -> int:
-        self.config.workers_root.mkdir(parents=True, exist_ok=True)
+        self.workers_root.mkdir(parents=True, exist_ok=True)
         self._blackboard_dir = self.config.task_root / "blackboard"
         (self._blackboard_dir / "records").mkdir(parents=True, exist_ok=True)
         self._blackboard_visible_path = (
@@ -123,6 +126,8 @@ class SimpleScheduler:
             task_id=self.config.task_id,
             target=self.config.target,
             target_kind=self.target_spec.kind.value,
+            attempt_id=self.attempt_id,
+            attempt_dir=str(self.attempt_root),
         )
         try:
             while True:
@@ -230,7 +235,7 @@ class SimpleScheduler:
     # ------------------------------------------------------------------
     async def _spawn_worker(self, index: int) -> WorkerProcess:
         worker_id = f"w{index:04d}"
-        worker_dir = self.config.workers_root / worker_id
+        worker_dir = self.workers_root / worker_id
         worker_dir.mkdir(parents=True, exist_ok=True)
         connector_id = ""
         endpoint: str | None = None
@@ -428,6 +433,7 @@ class SimpleScheduler:
         temp_path = records / f".{name}.tmp"
         payload = {
             "worker_id": worker.worker_id,
+            "attempt_id": self.attempt_id,
             "exit_code": worker.process.returncode,
             "started_at": worker.started_at,
             "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

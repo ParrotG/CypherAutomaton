@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -63,8 +65,8 @@ class SchedulerConfig:
         return self.state_dir / "tasks" / safe_component(self.task_id)
 
     @property
-    def workers_root(self) -> Path:
-        return self.task_root / "workers"
+    def attempts_root(self) -> Path:
+        return self.task_root / "attempts"
 
     def validate(self) -> None:
         if self.max_concurrent_workers < 1:
@@ -84,6 +86,11 @@ class SchedulerConfig:
             raise ValueError("worker_command cannot be empty")
         if self.sandbox_backend not in ("bwrap", "local"):
             raise ValueError("sandbox_backend must be one of: bwrap, local")
+
+
+def generate_attempt_id() -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return safe_component(f"attempt-{stamp}-{uuid.uuid4().hex[:6]}", fallback="attempt")
 
 
 def parse_worker_command(value: str) -> tuple[str, ...]:

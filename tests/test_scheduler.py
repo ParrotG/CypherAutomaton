@@ -46,12 +46,21 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         values.update(overrides)
         return SchedulerConfig(**values)
 
+    def current_attempt(self) -> Path:
+        roots = list(
+            (self.root / "scheduler" / "tasks" / "task-test" / "attempts").glob(
+                "attempt-*"
+            )
+        )
+        self.assertEqual(len(roots), 1, roots)
+        return roots[0]
+
     async def test_worker_limit_spawns_replacements_until_total_cap(self) -> None:
         with patch.dict(os.environ, {"FAKE_SCHEDULER_EXIT_CODE": "10"}):
             scheduler = SimpleScheduler(self.make_config())
             code = await scheduler.run()
         self.assertEqual(code, 10)
-        workers = sorted(path.name for path in (self.root / "scheduler" / "tasks" / "task-test" / "workers").glob("w*"))
+        workers = sorted(path.name for path in (self.current_attempt() / "workers").glob("w*"))
         self.assertEqual(workers, ["w0001", "w0002"])
         records = list(
             (
@@ -85,7 +94,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
             )
             code = await scheduler.run()
         self.assertEqual(code, 0)
-        worker_dir = self.root / "scheduler" / "tasks" / "task-test" / "workers" / "w0001"
+        worker_dir = self.current_attempt() / "workers" / "w0001"
         payload = json.loads((worker_dir / "fake_worker.json").read_text())
         self.assertIn("--target", payload["argv"])
         self.assertIn("https://example.com/challenge", payload["argv"])
@@ -117,7 +126,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
             )
             code = await scheduler.run()
         self.assertEqual(code, 0)
-        worker_dir = self.root / "scheduler" / "tasks" / "task-test" / "workers" / "w0001"
+        worker_dir = self.current_attempt() / "workers" / "w0001"
         copied = worker_dir / "agent" / "workspace" / "challenge_files" / "message.txt"
         self.assertEqual(copied.read_text(encoding="utf-8"), "file-target")
         payload = json.loads((worker_dir / "fake_worker.json").read_text())
@@ -132,7 +141,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
             )
             code = await scheduler.run()
         self.assertEqual(code, 0)
-        workers_dir = self.root / "scheduler" / "tasks" / "task-test" / "workers"
+        workers_dir = self.current_attempt() / "workers"
         workers = sorted(path.name for path in workers_dir.glob("w*"))
         self.assertEqual(workers, ["w0001", "w0002"])
 
