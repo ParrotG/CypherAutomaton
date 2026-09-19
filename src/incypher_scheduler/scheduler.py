@@ -15,6 +15,8 @@ import os
 import shutil
 import socket
 import sys
+import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -42,6 +44,8 @@ class WorkerProcess:
     run_dir: Path
     process: asyncio.subprocess.Process
     log_handle: Any
+    started_at: str
+    outcome_recorded: bool = False
 
 
 class EmbeddedBridge:
@@ -96,9 +100,18 @@ class SimpleScheduler:
         self._embedded: EmbeddedBridge | None = None
         self._sandbox_tool_root: Path | None = None
         self.target_spec: TargetSpec = classify_target(config.target)
+        self._blackboard_dir: Path | None = None
+        self._blackboard_visible_path: str = "/blackboard"
 
     async def run(self) -> int:
         self.config.workers_root.mkdir(parents=True, exist_ok=True)
+        self._blackboard_dir = self.config.task_root / "blackboard"
+        (self._blackboard_dir / "records").mkdir(parents=True, exist_ok=True)
+        self._blackboard_visible_path = (
+            "/blackboard"
+            if self.config.sandbox_backend == "bwrap"
+            else str(self._blackboard_dir)
+        )
         await self._ensure_sandbox_tools()
         if self.target_spec.kind == TargetKind.RAW_TCP:
             await self._start_bridge()
@@ -284,6 +297,7 @@ class SimpleScheduler:
             run_dir=worker_dir,
             process=process,
             log_handle=log_handle,
+            started_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
 
     def _copy_target_files(self, worker_dir: Path) -> None:
@@ -348,6 +362,15 @@ class SimpleScheduler:
             command.append("--sandbox-no-network")
         if self._sandbox_tool_root is not None:
             command.extend(["--sandbox-tool-root", str(self._sandbox_tool_root)])
+        if self._blackboard_dir is not None:
+            command.extend(
+                [
+                    "--blackboard-dir",
+                    str(self._blackboard_dir),
+                    "--blackboard-path",
+                    self._blackboard_visible_path,
+                ]
+            )
         if self.config.challenge_name:
             command.extend(["--challenge-name", self.config.challenge_name])
         if self.config.category:
@@ -387,9 +410,39 @@ class SimpleScheduler:
             worker.log_handle.close()
         except Exception:
             pass
+        if not worker.outcome_recorded:
+            self._write_system_record(worker)
+            worker.outcome_recorded = True
         if self._client is not None and worker.connector_id:
             with contextlib.suppress(Exception):
                 await self._client.delete_connector(worker.connector_id)
+
+    def _write_system_record(self, worker: WorkerProcess) -> None:
+        if self._blackboard_dir is None:
+            return
+        records = self._blackboard_dir / "records"
+        records.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        name = f"system-{worker.worker_id}-{stamp}-{uuid.uuid4().hex[:8]}.json"
+        final_path = records / name
+        temp_path = records / f".{name}.tmp"
+        payload = {
+            "worker_id": worker.worker_id,
+            "exit_code": worker.process.returncode,
+            "started_at": worker.started_at,
+            "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "run_dir": str(worker.run_dir),
+        }
+        try:
+            with temp_path.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, final_path)
+        finally:
+            with contextlib.suppress(OSError):
+                temp_path.unlink(missing_ok=True)
 
     # ------------------------------------------------------------------
     # Logging

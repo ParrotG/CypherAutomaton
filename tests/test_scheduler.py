@@ -53,6 +53,21 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(code, 10)
         workers = sorted(path.name for path in (self.root / "scheduler" / "tasks" / "task-test" / "workers").glob("w*"))
         self.assertEqual(workers, ["w0001", "w0002"])
+        records = list(
+            (
+                self.root
+                / "scheduler"
+                / "tasks"
+                / "task-test"
+                / "blackboard"
+                / "records"
+            ).glob("system-*.json")
+        )
+        self.assertEqual(len(records), 2)
+        self.assertEqual(
+            sorted(json.loads(record.read_text())["exit_code"] for record in records),
+            [10, 10],
+        )
 
     def test_classify_target_types(self) -> None:
         self.assertEqual(classify_target("127.0.0.1:1234").kind, TargetKind.RAW_TCP)
@@ -75,6 +90,18 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("--target", payload["argv"])
         self.assertIn("https://example.com/challenge", payload["argv"])
         self.assertNotIn("--agent-endpoint", payload["argv"])
+        records = list(
+            (
+                self.root
+                / "scheduler"
+                / "tasks"
+                / "task-test"
+                / "blackboard"
+                / "records"
+            ).glob("system-*.json")
+        )
+        self.assertEqual(len(records), 1)
+        self.assertEqual(json.loads(records[0].read_text())["exit_code"], 0)
 
     async def test_file_target_copies_files_and_runs_without_bridge(self) -> None:
         source = self.root / "challenge-files"

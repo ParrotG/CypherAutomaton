@@ -63,6 +63,8 @@ class AgentConfig:
     sandbox_tool_root: str | None = None
     sandbox_bwrap: str = "bwrap"
     sandbox_network: bool = True
+    blackboard_dir: str | None = None
+    blackboard_path: str = "/blackboard"
     verbose: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -91,6 +93,8 @@ class AgentConfig:
             )
         if self.sandbox_tool_root is not None and not str(self.sandbox_tool_root).strip():
             raise AgentConfigError("sandbox_tool_root must not be empty")
+        if not self.blackboard_path.startswith("/"):
+            raise AgentConfigError("blackboard_path must be an absolute sandbox path")
 
 
 def _read_text_file(path: Path) -> str | None:
@@ -165,6 +169,8 @@ def build_agent_config(
     sandbox_tool_root: str | None = None,
     sandbox_bwrap: str = "bwrap",
     sandbox_network: bool = True,
+    blackboard_dir: str | None = None,
+    blackboard_path: str = "/blackboard",
     verbose: bool = False,
     require_api_key: bool = True,
 ) -> AgentConfig:
@@ -290,6 +296,8 @@ def build_agent_config(
         sandbox_tool_root=sandbox_tool_root,
         sandbox_bwrap=sandbox_bwrap,
         sandbox_network=sandbox_network,
+        blackboard_dir=blackboard_dir,
+        blackboard_path=blackboard_path,
         verbose=verbose,
         metadata={"bridge_state": context.get("state")},
     )

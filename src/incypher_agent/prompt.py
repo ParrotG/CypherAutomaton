@@ -13,6 +13,7 @@ Rules:
 - You may write and run scripts, inspect files, and connect to the challenge service through the local endpoint.
 - The bash tool runs in a sandbox. It can see the workspace at /workspace and a preinstalled Python tool environment; it cannot read the host project or secrets.
 - If you need additional Python packages, create a venv inside /workspace with `python -m virtualenv .venv` and install them with `.venv/bin/pip`.
+- After a meaningful unit of work concludes, briefly record any outcome that may be useful to other agents. Do not log routine intermediate steps.
 - Continue working until you have a flag and call report_flag.
 - Do not ask the human for help.
 - Keep commands focused and verify your reasoning with actual tool output.
@@ -29,6 +30,11 @@ def build_initial_messages(config: AgentConfig) -> list[dict[str, str]]:
         description = "(no challenge description provided)"
 
     endpoint = config.agent_endpoint or "(direct task, no bridge endpoint)"
+    blackboard_line = (
+        f"Blackboard: {config.blackboard_path} (bb-read / bb-write)\n"
+        if config.blackboard_dir
+        else ""
+    )
     user = f"""Challenge: {config.challenge_id}
 Run: {config.run_id}
 Name: {config.challenge_name or config.challenge_id}
@@ -36,8 +42,7 @@ Category: {config.category or "unknown"}
 Target: {config.target or "(not provided)"}
 Local agent endpoint: {endpoint}
 Sandbox workspace: /workspace
-
-Flag pattern: {config.flag_pattern}
+{blackboard_line}Flag pattern: {config.flag_pattern}
 Use `report_flag` once you have a verified candidate.
 
 Challenge description:

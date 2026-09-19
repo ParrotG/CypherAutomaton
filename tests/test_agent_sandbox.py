@@ -9,6 +9,39 @@ from incypher_agent.sandbox import BwrapSandbox
 
 
 class SandboxTests(unittest.TestCase):
+    def test_bwrap_blackboard_helpers_are_atomic_and_shared(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            blackboard = root / "blackboard"
+            blackboard.mkdir()
+            sandbox = BwrapSandbox(
+                workspace,
+                tool_root=None,
+                network=True,
+                blackboard_dir=blackboard,
+                blackboard_path="/blackboard",
+                worker_id="w0001",
+            )
+            prepared = sandbox.prepare(
+                "printf 'meaningful outcome\\n' | bb-write; echo '---'; bb-read"
+            )
+            result = subprocess.run(
+                prepared.argv,
+                cwd=prepared.cwd,
+                env=prepared.env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("---", result.stdout)
+            self.assertIn("meaningful outcome", result.stdout)
+            records = sorted((blackboard / "records").glob("*.md"))
+            self.assertEqual(len(records), 1)
+            self.assertIn("meaningful outcome", records[0].read_text(encoding="utf-8"))
+
     def test_bwrap_hides_paths_outside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

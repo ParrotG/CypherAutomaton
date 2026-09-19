@@ -11,3 +11,5 @@ received/
 *.egg-info/
 build/
 dist/
+
+sample_challenges/

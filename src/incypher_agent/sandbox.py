@@ -63,6 +63,9 @@ class BwrapSandbox:
         bwrap_path: str = "bwrap",
         tool_root: str | Path | None = None,
         network: bool = True,
+        blackboard_dir: str | Path | None = None,
+        blackboard_path: str = "/blackboard",
+        worker_id: str = "worker",
     ) -> None:
         resolved = shutil.which(bwrap_path)
         if not resolved:
@@ -73,6 +76,13 @@ class BwrapSandbox:
             Path(tool_root).expanduser().resolve() if tool_root else None
         )
         self.network = network
+        self.blackboard_dir = (
+            Path(blackboard_dir).expanduser().resolve()
+            if blackboard_dir
+            else None
+        )
+        self.blackboard_path = blackboard_path
+        self.worker_id = worker_id
 
     def prepare(self, command: str) -> SandboxCommand:
         args = [
@@ -101,6 +111,21 @@ class BwrapSandbox:
                 "--bind",
                 str(self.workspace),
                 "/workspace",
+            ]
+        )
+        helper = Path(__file__).with_name("blackboard_cli.py")
+        if helper.exists():
+            for name in ("bb-write", "bb-read"):
+                args.extend(
+                    ["--ro-bind", str(helper), f"/tmp/{name}"]
+                )
+        if self.blackboard_dir is not None:
+            self.blackboard_dir.mkdir(parents=True, exist_ok=True)
+            args.extend(
+                ["--bind", str(self.blackboard_dir), self.blackboard_path]
+            )
+        args.extend(
+            [
                 "--chdir",
                 "/workspace",
                 "--clearenv",
@@ -112,7 +137,9 @@ class BwrapSandbox:
             else ""
         )
         sandbox_path = ":".join(
-            part for part in (tool_bin, "/usr/local/bin", "/usr/bin", "/bin") if part
+            part
+            for part in (tool_bin, "/tmp", "/usr/local/bin", "/usr/bin", "/bin")
+            if part
         )
         env = {
             "HOME": "/workspace",
@@ -125,6 +152,9 @@ class BwrapSandbox:
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "PIP_NO_INPUT": "1",
         }
+        env["INCYPHER_WORKER_ID"] = self.worker_id
+        if self.blackboard_dir is not None:
+            env["INCYPHER_BLACKBOARD"] = self.blackboard_path
         for key, value in env.items():
             args.extend(["--setenv", key, value])
         args.extend(["--", "/bin/bash", "-lc", command])
@@ -155,5 +185,8 @@ def create_sandbox(config: Any) -> LocalSandbox | BwrapSandbox:
             bwrap_path=getattr(config, "sandbox_bwrap", "bwrap"),
             tool_root=configured_tool_root,
             network=bool(getattr(config, "sandbox_network", True)),
+            blackboard_dir=getattr(config, "blackboard_dir", None),
+            blackboard_path=getattr(config, "blackboard_path", "/blackboard"),
+            worker_id=str(getattr(config, "run_id", "worker")),
         )
     raise SandboxError(f"unknown sandbox backend: {backend!r}")
