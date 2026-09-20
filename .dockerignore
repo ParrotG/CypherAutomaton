@@ -1,0 +1,16 @@
+.git
+.gitignore
+.venv
+.uv-cache
+.cypher_bridge
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+build
+dist
+.env.local
+.env
+sample_challenges
+sessions
+received
