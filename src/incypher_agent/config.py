@@ -59,6 +59,7 @@ class AgentConfig:
     model_retry_base: float = 1.0
     model_retry_max_wait: float = 60.0
     verification_poll_interval: float = 1.0
+    wait_for_verification: bool = True
     bash_timeout: float = 60.0
     max_tool_output: int = 20_000
     flag_pattern: str = DEFAULT_FLAG_PATTERN
@@ -174,6 +175,7 @@ def build_agent_config(
     model_retry_base: float = 1.0,
     model_retry_max_wait: float = 60.0,
     verification_poll_interval: float = 1.0,
+    wait_for_verification: bool = True,
     bash_timeout: float = 60.0,
     max_tool_output: int = 20_000,
     flag_pattern: str = DEFAULT_FLAG_PATTERN,
@@ -304,6 +306,7 @@ def build_agent_config(
         model_retry_base=float(model_retry_base),
         model_retry_max_wait=float(model_retry_max_wait),
         verification_poll_interval=float(verification_poll_interval),
+        wait_for_verification=bool(wait_for_verification),
         bash_timeout=float(bash_timeout),
         max_tool_output=int(max_tool_output),
         flag_pattern=flag_pattern,

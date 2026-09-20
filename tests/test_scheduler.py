@@ -81,6 +81,18 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
             [10, 10],
         )
 
+    def test_no_wait_verification_is_passed_to_worker(self) -> None:
+        scheduler = SimpleScheduler(
+            self.make_config(wait_for_verification=False)
+        )
+        command = scheduler._worker_command(
+            "w0001",
+            self.root / "worker",
+            None,
+            "https://example.com/challenge",
+        )
+        self.assertIn("--no-wait-verification", command)
+
     def test_manual_review_writes_verification(self) -> None:
         agent_dir = (
             self.root

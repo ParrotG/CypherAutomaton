@@ -365,6 +365,8 @@ class SimpleScheduler:
         )
         if self.config.sandbox_network is False:
             command.append("--sandbox-no-network")
+        if self.config.wait_for_verification is False:
+            command.append("--no-wait-verification")
         if self._sandbox_tool_root is not None:
             command.extend(["--sandbox-tool-root", str(self._sandbox_tool_root)])
         if self._blackboard_dir is not None:

@@ -33,6 +33,7 @@ class SchedulerConfig:
     worker_context_reserve_tokens: int = 8_000
     worker_bash_timeout: float = 60.0
     worker_max_tool_output: int = 20_000
+    wait_for_verification: bool = True
 
     env_file: str = ".env.local"
     team_key_file: str | None = None

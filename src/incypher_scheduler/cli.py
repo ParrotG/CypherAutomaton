@@ -68,7 +68,13 @@ def cmd_review(args: argparse.Namespace) -> int:
     write_json_atomic(agent_dir / "verification.json", payload)
     print(
         json.dumps(
-            {"ok": True, "worker_dir": str(agent_dir), "verification": payload},
+            {
+                "ok": True,
+                "attempt_id": agent_dir.parts[-4],
+                "run_id": args.run_id,
+                "worker_dir": str(agent_dir),
+                "verification": payload,
+            },
             ensure_ascii=False,
         )
     )
@@ -139,6 +145,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--worker-context-reserve-tokens", type=int, default=8_000)
     run.add_argument("--worker-bash-timeout", type=float, default=60.0)
     run.add_argument("--worker-max-tool-output", type=int, default=20_000)
+    run.add_argument(
+        "--no-wait-verification",
+        action="store_true",
+        help="Exit worker immediately after report_flag instead of waiting for manual review.",
+    )
     run.add_argument("--env-file", default=".env.local")
     run.add_argument("--team-key-file")
     run.add_argument("--allow-insecure-key-file", action="store_true")
@@ -166,7 +177,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="write manual verification result for a waiting worker",
     )
     review.add_argument("--task-id", required=True)
-    review.add_argument("--attempt-id", default=None)
+    review.add_argument(
+        "--attempt-id",
+        default=None,
+        help="Attempt id; defaults to the latest attempt containing run-id.",
+    )
     review.add_argument("--run-id", required=True)
     review.add_argument("--result", choices=["success", "failed"], required=True)
     review.add_argument("--feedback", default="")
@@ -213,6 +228,7 @@ def main(argv: list[str] | None = None) -> int:
             worker_context_reserve_tokens=args.worker_context_reserve_tokens,
             worker_bash_timeout=args.worker_bash_timeout,
             worker_max_tool_output=args.worker_max_tool_output,
+            wait_for_verification=not args.no_wait_verification,
             env_file=args.env_file,
             team_key_file=args.team_key_file,
             allow_insecure_key_file=args.allow_insecure_key_file,

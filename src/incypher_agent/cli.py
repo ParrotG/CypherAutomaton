@@ -83,6 +83,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             sandbox_network=not args.sandbox_no_network,
             blackboard_dir=args.blackboard_dir,
             blackboard_path=args.blackboard_path,
+            wait_for_verification=not args.no_wait_verification,
             verbose=args.verbose,
         )
     except (AgentConfigError, FileNotFoundError) as exc:
@@ -135,6 +136,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             sandbox_network=not args.sandbox_no_network,
             blackboard_dir=args.blackboard_dir,
             blackboard_path=args.blackboard_path,
+            wait_for_verification=not args.no_wait_verification,
             verbose=args.verbose,
             require_api_key=False,
         )
@@ -286,6 +288,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--sandbox-no-network", action="store_true")
     run.add_argument("--blackboard-dir")
     run.add_argument("--blackboard-path", default="/blackboard")
+    run.add_argument(
+        "--no-wait-verification",
+        action="store_true",
+        help="Exit immediately after report_flag instead of waiting for manual verification.",
+    )
     run.add_argument("--verbose", action="store_true")
     run.add_argument("--quiet", action="store_true")
 
@@ -312,6 +319,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--sandbox-no-network", action="store_true")
     doctor.add_argument("--blackboard-dir")
     doctor.add_argument("--blackboard-path", default="/blackboard")
+    doctor.add_argument("--no-wait-verification", action="store_true")
     doctor.add_argument("--verbose", action="store_true")
 
     smoke = subparsers.add_parser(

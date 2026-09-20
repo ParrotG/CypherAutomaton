@@ -123,6 +123,27 @@ class AgentLoopTests(unittest.TestCase):
             self.assertEqual(result.flag, "INCYPHER{abc}")
             self.assertTrue((root / "agent" / "flag.json").exists())
 
+    def test_no_wait_verification_exits_immediately(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            model = ScriptedModel(
+                [
+                    tool_reply(
+                        "call_1",
+                        "report_flag",
+                        json.dumps({"flag": "flag{direct}", "evidence": "direct"}),
+                    )
+                ]
+            )
+            loop = AgentLoop(
+                make_config(root, wait_for_verification=False),
+                model=model,
+            )
+            result = loop.run()
+            self.assertEqual(result.status, "SUCCESS")
+            self.assertEqual(result.flag, "INCYPHER{direct}")
+            self.assertFalse((root / "agent" / "verification.json").exists())
+
     def test_rejected_candidate_feedback_resumes_same_context(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -248,6 +248,28 @@ class AgentLoop:
                             }
                         )
                         if outcome.done and outcome.flag:
+                            if not self.config.wait_for_verification:
+                                self.store.write_flag(
+                                    outcome.flag,
+                                    evidence=_short(outcome.content, 1000),
+                                )
+                                self.store.event(
+                                    "success",
+                                    {"flag": outcome.flag, "status": outcome.status},
+                                )
+                                self.store.set_state(
+                                    status="SUCCESS",
+                                    flag=outcome.flag,
+                                    stop_reason="flag_reported",
+                                    exit_code=0,
+                                )
+                                self.store.close()
+                                return AgentResult(
+                                    status="SUCCESS",
+                                    flag=outcome.flag,
+                                    reason="flag_reported",
+                                    exit_code=0,
+                                )
                             candidate = {
                                 "flag": outcome.flag,
                                 "raw_flag": outcome.raw_flag,
