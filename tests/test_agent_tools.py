@@ -61,7 +61,9 @@ class AgentToolTests(unittest.TestCase):
             tools = ToolExecutor(self.make_config(Path(temp)))
             result = tools.execute("report_flag", {"flag": "flag{test}", "evidence": "unit"})
             self.assertTrue(result.done)
-            self.assertEqual(result.flag, "flag{test}")
+            self.assertEqual(result.flag, "INCYPHER{test}")
+            self.assertEqual(result.raw_flag, "flag{test}")
+            self.assertEqual(result.flag_body, "test")
 
 
 if __name__ == "__main__":

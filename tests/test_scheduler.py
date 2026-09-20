@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
+from incypher_scheduler.cli import main as scheduler_cli_main
 from incypher_scheduler.config import SchedulerConfig, parse_worker_command
 from incypher_scheduler.scheduler import SimpleScheduler
 from incypher_scheduler.targets import TargetKind, classify_target
@@ -77,6 +80,45 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
             sorted(json.loads(record.read_text())["exit_code"] for record in records),
             [10, 10],
         )
+
+    def test_manual_review_writes_verification(self) -> None:
+        agent_dir = (
+            self.root
+            / "scheduler"
+            / "tasks"
+            / "task-test"
+            / "attempts"
+            / "attempt-manual"
+            / "workers"
+            / "w0001"
+            / "agent"
+        )
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        (agent_dir / "candidate.json").write_text(
+            json.dumps({"flag": "INCYPHER{abc}"}),
+            encoding="utf-8",
+        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = scheduler_cli_main(
+                [
+                    "review",
+                    "--task-id",
+                    "task-test",
+                    "--run-id",
+                    "w0001",
+                    "--result",
+                    "failed",
+                    "--feedback",
+                    "try again",
+                    "--state-dir",
+                    str(self.root / "scheduler"),
+                ]
+            )
+        self.assertEqual(code, 0, output.getvalue())
+        verification = json.loads((agent_dir / "verification.json").read_text())
+        self.assertFalse(verification["success"])
+        self.assertEqual(verification["feedback"], "try again")
 
     def test_classify_target_types(self) -> None:
         self.assertEqual(classify_target("127.0.0.1:1234").kind, TargetKind.RAW_TCP)

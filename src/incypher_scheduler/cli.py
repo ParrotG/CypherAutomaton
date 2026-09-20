@@ -10,13 +10,105 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import SchedulerConfig, parse_worker_command
+from incypher_bridge.transcript import write_json_atomic
+
+from .config import SchedulerConfig, parse_worker_command, safe_component
 from .scheduler import SimpleScheduler
 
 
 def _default_task_id() -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"task-{stamp}-{uuid.uuid4().hex[:6]}"
+
+
+def _resolve_agent_dir(
+    *,
+    state_dir: Path,
+    task_id: str,
+    attempt_id: str | None,
+    run_id: str,
+) -> Path:
+    task_root = state_dir / "tasks" / safe_component(task_id)
+    attempts_root = task_root / "attempts"
+    if attempt_id:
+        attempts = [attempts_root / safe_component(attempt_id)]
+    else:
+        attempts = sorted(
+            attempts_root.glob("attempt-*"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    for attempt in attempts:
+        agent_dir = attempt / "workers" / safe_component(run_id) / "agent"
+        if agent_dir.exists():
+            return agent_dir
+    raise FileNotFoundError(
+        f"cannot find worker {run_id!r} under task {task_id!r}"
+    )
+
+
+def cmd_review(args: argparse.Namespace) -> int:
+    state_dir = Path(args.state_dir).expanduser().resolve()
+    try:
+        agent_dir = _resolve_agent_dir(
+            state_dir=state_dir,
+            task_id=args.task_id,
+            attempt_id=args.attempt_id,
+            run_id=args.run_id,
+        )
+    except FileNotFoundError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 1
+    payload = {
+        "success": args.result == "success",
+        "feedback": args.feedback or "",
+        "reviewed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "reviewer": "manual",
+    }
+    write_json_atomic(agent_dir / "verification.json", payload)
+    print(
+        json.dumps(
+            {"ok": True, "worker_dir": str(agent_dir), "verification": payload},
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def cmd_candidates(args: argparse.Namespace) -> int:
+    state_dir = Path(args.state_dir).expanduser().resolve()
+    task_root = state_dir / "tasks" / safe_component(args.task_id)
+    rows: list[dict] = []
+    for candidate in sorted((task_root / "attempts").glob("*/workers/*/agent/candidate.json")):
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        state_file = candidate.with_name("state.json")
+        try:
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+        except Exception:
+            state = {}
+        rows.append(
+            {
+                "attempt_id": candidate.parts[-5],
+                "run_id": candidate.parts[-3],
+                "candidate_file": str(candidate),
+                "flag": payload.get("flag"),
+                "raw_flag": payload.get("raw_flag"),
+                "flag_body": payload.get("flag_body"),
+                "state": state.get("status"),
+            }
+        )
+    if args.json:
+        print(json.dumps({"ok": True, "candidates": rows}, ensure_ascii=False, indent=2))
+        return 0
+    for row in rows:
+        print(
+            f"{row['attempt_id']} {row['run_id']} "
+            f"{row['state']} {row['flag']}"
+        )
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,11 +161,34 @@ def build_parser() -> argparse.ArgumentParser:
             "The scheduler appends --run-dir, --agent-endpoint and worker limits."
         ),
     )
+    review = subparsers.add_parser(
+        "review",
+        help="write manual verification result for a waiting worker",
+    )
+    review.add_argument("--task-id", required=True)
+    review.add_argument("--attempt-id", default=None)
+    review.add_argument("--run-id", required=True)
+    review.add_argument("--result", choices=["success", "failed"], required=True)
+    review.add_argument("--feedback", default="")
+    review.add_argument("--state-dir", default=".cypher_bridge/scheduler")
+
+    candidates = subparsers.add_parser(
+        "candidates",
+        help="list reported candidate flags",
+    )
+    candidates.add_argument("--task-id", required=True)
+    candidates.add_argument("--state-dir", default=".cypher_bridge/scheduler")
+    candidates.add_argument("--json", action="store_true")
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "review":
+        return cmd_review(args)
+    if args.command == "candidates":
+        return cmd_candidates(args)
     if args.command != "run":
         print(json.dumps({"ok": False, "error": f"unknown command {args.command!r}"}))
         return 2

@@ -16,7 +16,13 @@ class ScriptedModel:
         self.script = list(script)
         self.calls = 0
 
-    def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ModelReply:
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        deadline: float | None = None,
+    ) -> ModelReply:
         self.calls += 1
         if not self.script:
             raise AssertionError("scripted model exhausted")
@@ -57,10 +63,54 @@ def tool_reply(call_id: str, name: str, arguments: str) -> ModelReply:
     )
 
 
+class VerificationModel:
+    """Report a candidate, reject once, then report again after feedback."""
+
+    def __init__(self, agent_dir: Path) -> None:
+        self.agent_dir = agent_dir
+        self.calls = 0
+
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        deadline: float | None = None,
+    ) -> ModelReply:
+        self.calls += 1
+        if self.calls == 1:
+            (self.agent_dir / "verification.json").write_text(
+                json.dumps({"success": False, "feedback": "try the other CRC"}),
+                encoding="utf-8",
+            )
+            return tool_reply(
+                "call_1",
+                "report_flag",
+                json.dumps({"flag": "flag{f989c670}", "evidence": "first candidate"}),
+            )
+        if self.calls == 2:
+            (self.agent_dir / "verification.json").write_text(
+                json.dumps({"success": True, "feedback": ""}),
+                encoding="utf-8",
+            )
+            return tool_reply(
+                "call_2",
+                "report_flag",
+                json.dumps({"flag": "INCYPHER{ad74b76d}", "evidence": "second candidate"}),
+            )
+        raise AssertionError("verification model exhausted")
+
+
 class AgentLoopTests(unittest.TestCase):
     def test_success_via_report_flag(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
+            agent_dir = root / "agent"
+            agent_dir.mkdir(parents=True, exist_ok=True)
+            (agent_dir / "verification.json").write_text(
+                json.dumps({"success": True, "feedback": ""}),
+                encoding="utf-8",
+            )
             model = ScriptedModel(
                 [
                     tool_reply("call_1", "bash", json.dumps({"command": "echo hello"})),
@@ -70,8 +120,26 @@ class AgentLoopTests(unittest.TestCase):
             loop = AgentLoop(make_config(root), model=model)
             result = loop.run()
             self.assertEqual(result.status, "SUCCESS")
-            self.assertEqual(result.flag, "flag{abc}")
+            self.assertEqual(result.flag, "INCYPHER{abc}")
             self.assertTrue((root / "agent" / "flag.json").exists())
+
+    def test_rejected_candidate_feedback_resumes_same_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            agent_dir = root / "agent"
+            agent_dir.mkdir(parents=True, exist_ok=True)
+            model = VerificationModel(agent_dir)
+            loop = AgentLoop(make_config(root), model=model)
+            result = loop.run()
+            self.assertEqual(result.status, "SUCCESS")
+            self.assertEqual(result.flag, "INCYPHER{ad74b76d}")
+            events = [
+                json.loads(line)
+                for line in (agent_dir / "events.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            kinds = [event["kind"] for event in events]
+            self.assertIn("verification_failed", kinds)
 
     def test_context_limit(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

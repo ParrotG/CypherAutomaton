@@ -62,6 +62,8 @@ class AgentLoop:
             model=config.model,
             thinking=config.thinking,
             temperature=config.temperature,
+            retry_base=config.model_retry_base,
+            retry_max_wait=config.model_retry_max_wait,
             timeout=180.0,
         )
 
@@ -70,6 +72,7 @@ class AgentLoop:
     # ------------------------------------------------------------------
     def run(self) -> AgentResult:
         started = time.monotonic()
+        deadline = started + self.config.max_seconds
         model_calls = 0
         tool_calls = 0
         prompt_tokens = 0
@@ -140,8 +143,18 @@ class AgentLoop:
 
                 request_message_count = len(messages)
                 try:
-                    reply = self.model.chat(messages, TOOL_SCHEMAS)
+                    reply = self.model.chat(
+                        messages,
+                        TOOL_SCHEMAS,
+                        deadline=deadline,
+                    )
                 except ModelError as exc:
+                    if time.monotonic() >= deadline:
+                        return self._finish_time_limit(
+                            f"model unavailable until max_seconds: {exc}",
+                            model_calls,
+                            tool_calls,
+                        )
                     return self._finish_model_error(str(exc), model_calls, tool_calls)
 
                 if reply.prompt_tokens > 0:
@@ -235,27 +248,69 @@ class AgentLoop:
                             }
                         )
                         if outcome.done and outcome.flag:
-                            self.store.write_flag(
-                                outcome.flag,
-                                evidence=_short(outcome.content, 1000),
+                            candidate = {
+                                "flag": outcome.flag,
+                                "raw_flag": outcome.raw_flag,
+                                "flag_body": outcome.flag_body,
+                                "evidence": _short(outcome.content, 1500),
+                            }
+                            self.store.write_candidate(candidate)
+                            self.store.event("candidate_reported", candidate)
+                            self.store.set_state(
+                                status="WAITING_VERIFICATION",
+                                flag=outcome.flag,
+                                stop_reason="candidate_reported",
+                            )
+                            verification = self._wait_for_verification(deadline=deadline)
+                            if verification is None:
+                                return self._finish_time_limit(
+                                    "verification wait exceeded max_seconds",
+                                    model_calls,
+                                    tool_calls,
+                                )
+                            if verification.get("success"):
+                                self.store.write_flag(
+                                    outcome.flag,
+                                    evidence=_short(outcome.content, 1000),
+                                )
+                                self.store.event(
+                                    "success",
+                                    {"flag": outcome.flag, "status": "FLAG_VERIFIED"},
+                                )
+                                self.store.set_state(
+                                    status="SUCCESS",
+                                    flag=outcome.flag,
+                                    stop_reason="flag_verified",
+                                    exit_code=0,
+                                )
+                                self.store.close()
+                                return AgentResult(
+                                    status="SUCCESS",
+                                    flag=outcome.flag,
+                                    reason="flag_verified",
+                                    exit_code=0,
+                                )
+                            feedback = str(
+                                verification.get("feedback")
+                                or "Candidate rejected by verification."
                             )
                             self.store.event(
-                                "success",
-                                {"flag": outcome.flag, "status": outcome.status},
+                                "verification_failed",
+                                {"flag": outcome.flag, "feedback": feedback},
                             )
-                            self.store.set_state(
-                                status="SUCCESS",
-                                flag=outcome.flag,
-                                stop_reason="flag_reported",
-                                exit_code=0,
+                            self.store.set_state(status="running", stop_reason=None)
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        f"Platform rejected candidate {outcome.flag}. "
+                                        f"Feedback: {feedback}\n"
+                                        "Do not report the same candidate again. "
+                                        "Continue working from the current context."
+                                    ),
+                                }
                             )
-                            self.store.close()
-                            return AgentResult(
-                                status="SUCCESS",
-                                flag=outcome.flag,
-                                reason="flag_reported",
-                                exit_code=0,
-                            )
+                            break
                     continue
 
                 # A plain assistant message is treated as a planning/turn note,
@@ -275,8 +330,17 @@ class AgentLoop:
             return AgentResult(status="STOPPED", reason="keyboard_interrupt", exit_code=130)
 
     # ------------------------------------------------------------------
-    # Limits / failure handling
+    # Verification wait / limits
     # ------------------------------------------------------------------
+    def _wait_for_verification(self, *, deadline: float) -> dict[str, Any] | None:
+        while time.monotonic() < deadline:
+            verification = self.store.consume_verification()
+            if verification is not None:
+                return verification
+            self.store.heartbeat("waiting_verification")
+            time.sleep(self.config.verification_poll_interval)
+        return None
+
     def _time_limit_reason(self, *, started: float) -> str | None:
         elapsed = time.monotonic() - started
         if elapsed >= self.config.max_seconds:

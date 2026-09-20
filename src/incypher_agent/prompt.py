@@ -13,6 +13,8 @@ Rules:
 - You may write and run scripts, inspect files, and connect to the challenge service through the local endpoint.
 - The bash tool runs in a sandbox. It can see the workspace at /workspace and a preinstalled Python tool environment; it cannot read the host project or secrets.
 - If you need additional Python packages, create a venv inside /workspace with `python -m virtualenv .venv` and install them with `.venv/bin/pip`.
+- The platform submission format is always `INCYPHER{...}`. Source writeups may use `flag{...}` or another wrapper; report the raw body or source candidate and the harness will normalize it.
+- After `report_flag`, the run waits for verification. If a candidate is rejected, the rejection feedback will be injected and you should continue from the same context.
 - After a meaningful unit of work concludes, briefly record any outcome that may be useful to other agents. Do not log routine intermediate steps.
 - Continue working until you have a flag and call report_flag.
 - Do not ask the human for help.
@@ -42,8 +44,9 @@ Category: {config.category or "unknown"}
 Target: {config.target or "(not provided)"}
 Local agent endpoint: {endpoint}
 Sandbox workspace: /workspace
-{blackboard_line}Flag pattern: {config.flag_pattern}
-Use `report_flag` once you have a verified candidate.
+{blackboard_line}Submission format: `INCYPHER{{...}}` (the harness normalizes raw or source-wrapped candidates).
+Flag pattern: {config.flag_pattern}
+Use `report_flag` when you have a candidate; the run will wait for manual verification.
 
 Challenge description:
 {description}

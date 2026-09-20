@@ -64,6 +64,8 @@ class AgentStore:
         self.heartbeat_file = self.root / "heartbeat"
         self.escalation_file = self.root / "escalation.json"
         self.flag_file = self.root / "flag.json"
+        self.candidate_file = self.root / "candidate.json"
+        self.verification_file = self.root / "verification.json"
         self._lock = threading.RLock()
         self._seq = 0
         self.state = AgentState()
@@ -131,6 +133,24 @@ class AgentStore:
                 "recorded_at": utc_now(),
             },
         )
+
+    def write_candidate(self, payload: dict[str, Any]) -> None:
+        body = dict(payload)
+        body.setdefault("recorded_at", utc_now())
+        write_json_atomic(self.candidate_file, body)
+
+    def consume_verification(self) -> dict[str, Any] | None:
+        if not self.verification_file.exists():
+            return None
+        try:
+            payload = json.loads(self.verification_file.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {"success": False, "feedback": "invalid verification JSON"}
+        try:
+            self.verification_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return payload if isinstance(payload, dict) else None
 
     def close(self) -> None:
         self.state.touch()

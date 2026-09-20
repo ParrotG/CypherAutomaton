@@ -13,7 +13,7 @@ DEFAULT_MODEL = "deepseek-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_ENV_FILE = ".env.local"
 DEFAULT_STATE_DIR = ".cypher_bridge"
-DEFAULT_FLAG_PATTERN = r"(?:flag|INCYPHER)\{[^}\r\n]+\}"
+DEFAULT_FLAG_PATTERN = r"INCYPHER\{[^}\r\n]+\}"
 DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000
 DEFAULT_CONTEXT_RESERVE_TOKENS = 8_000
 
@@ -56,6 +56,9 @@ class AgentConfig:
     max_seconds: float = 3600.0
     context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS
     context_reserve_tokens: int = DEFAULT_CONTEXT_RESERVE_TOKENS
+    model_retry_base: float = 1.0
+    model_retry_max_wait: float = 60.0
+    verification_poll_interval: float = 1.0
     bash_timeout: float = 60.0
     max_tool_output: int = 20_000
     flag_pattern: str = DEFAULT_FLAG_PATTERN
@@ -83,6 +86,12 @@ class AgentConfig:
             raise AgentConfigError(
                 "context_window_tokens must be greater than context_reserve_tokens"
             )
+        if self.model_retry_base <= 0:
+            raise AgentConfigError("model_retry_base must be positive")
+        if self.model_retry_max_wait <= 0:
+            raise AgentConfigError("model_retry_max_wait must be positive")
+        if self.verification_poll_interval <= 0:
+            raise AgentConfigError("verification_poll_interval must be positive")
         if self.bash_timeout <= 0:
             raise AgentConfigError("bash_timeout must be positive")
         if self.max_tool_output <= 0:
@@ -162,6 +171,9 @@ def build_agent_config(
     max_seconds: float = 3600.0,
     context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
     context_reserve_tokens: int = DEFAULT_CONTEXT_RESERVE_TOKENS,
+    model_retry_base: float = 1.0,
+    model_retry_max_wait: float = 60.0,
+    verification_poll_interval: float = 1.0,
     bash_timeout: float = 60.0,
     max_tool_output: int = 20_000,
     flag_pattern: str = DEFAULT_FLAG_PATTERN,
@@ -289,6 +301,9 @@ def build_agent_config(
         max_seconds=float(max_seconds),
         context_window_tokens=int(context_window_tokens),
         context_reserve_tokens=int(context_reserve_tokens),
+        model_retry_base=float(model_retry_base),
+        model_retry_max_wait=float(model_retry_max_wait),
+        verification_poll_interval=float(verification_poll_interval),
         bash_timeout=float(bash_timeout),
         max_tool_output=int(max_tool_output),
         flag_pattern=flag_pattern,

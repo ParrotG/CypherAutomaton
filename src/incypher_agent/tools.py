@@ -83,9 +83,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "report_flag",
             "description": (
-                "Record a candidate challenge flag and stop the run successfully. "
-                "Use this when you have extracted a flag and verified it as much "
-                "as the environment allows."
+                "Submit a candidate challenge flag for verification. The platform "
+                "submission format is INCYPHER{...}; the harness accepts raw bodies "
+                "or other source wrappers such as flag{...} and normalizes them. "
+                "The run waits for manual/platform verification before succeeding."
             ),
             "parameters": {
                 "type": "object",
@@ -112,6 +113,8 @@ class ToolOutcome:
     done: bool = False
     status: str | None = None
     flag: str | None = None
+    raw_flag: str | None = None
+    flag_body: str | None = None
 
 
 class ToolExecutor:
@@ -306,29 +309,57 @@ class ToolExecutor:
     # report_flag
     # ------------------------------------------------------------------
     def _report_flag(self, args: dict[str, Any]) -> ToolOutcome:
-        flag = str(args.get("flag", "")).strip()
+        raw_flag = str(args.get("flag", "")).strip()
         evidence = str(args.get("evidence", "")).strip()
-        if not flag:
+        if not raw_flag:
             return ToolOutcome(content=json.dumps({"error": "flag is required"}))
+
+        match = re.fullmatch(
+            r"(?:[A-Za-z0-9_.-]+)\{([^}\r\n]*)\}",
+            raw_flag,
+        )
+        body = match.group(1).strip() if match else raw_flag
+        if not body or any(char in body for char in "{}"):
+            return ToolOutcome(
+                content=json.dumps(
+                    {
+                        "error": "could not extract a valid flag body",
+                        "raw_flag": raw_flag,
+                    }
+                )
+            )
+        normalized = f"INCYPHER{{{body}}}"
         if self.config.flag_pattern:
             try:
-                if not re.search(self.config.flag_pattern, flag):
+                if not re.search(self.config.flag_pattern, normalized):
                     return ToolOutcome(
                         content=json.dumps(
                             {
-                                "error": "flag does not match the configured flag_pattern",
+                                "error": "normalized flag does not match configured flag_pattern",
                                 "flag_pattern": self.config.flag_pattern,
-                                "flag": flag,
+                                "normalized_flag": normalized,
+                                "raw_flag": raw_flag,
                             }
                         )
                     )
             except re.error as exc:
                 return ToolOutcome(content=json.dumps({"error": f"invalid flag_pattern: {exc}"}))
         return ToolOutcome(
-            content=json.dumps({"status": "FLAG_REPORTED", "flag": flag, "evidence": evidence}),
+            content=json.dumps(
+                {
+                    "status": "CANDIDATE_REPORTED",
+                    "raw_flag": raw_flag,
+                    "flag_body": body,
+                    "normalized_flag": normalized,
+                    "evidence": evidence,
+                },
+                ensure_ascii=False,
+            ),
             done=True,
-            status="FLAG_REPORTED",
-            flag=flag,
+            status="CANDIDATE_REPORTED",
+            flag=normalized,
+            raw_flag=raw_flag,
+            flag_body=body,
         )
 
     # ------------------------------------------------------------------
