@@ -22,6 +22,8 @@ class Brain:
         workspace_dir: str | None = None,
         events_path: str | None = None,
         log_context: dict[str, Any] | None = None,
+        deadline: float | None = None,
+        stop_event: Any | None = None,
     ) -> None:
         self.run_bash = run_bash
         self.submit_flag = submit_flag
@@ -32,6 +34,8 @@ class Brain:
         self.workspace_dir = workspace_dir
         self.events_path = events_path
         self.log_context = dict(log_context or {})
+        self.deadline = deadline
+        self.stop_event = stop_event
         self.context_window_tokens = int(
             os.environ.get("CONTEXT_WINDOW_TOKENS", "1000000")
         )
@@ -62,6 +66,8 @@ class Brain:
                 context_reserve_tokens=self.context_reserve_tokens,
                 max_total_tokens=self.max_total_tokens,
                 max_plain_replies=self.max_plain_replies,
+                deadline=self.deadline,
+                stop_event=self.stop_event,
                 events=events,
             ).run(prompt)
         finally:

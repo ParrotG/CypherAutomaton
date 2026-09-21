@@ -72,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         "attempts": result.get("attempt_count"),
         "error": result.get("error"),
         "out": str(out),
-        "events": str(work_root / str(args.challenge_id) / "events.jsonl"),
+        "events": str(work_root / str(args.challenge_id) / "agents"),
     }
     print(json.dumps(summary, ensure_ascii=False))
     return 0 if result.get("solved") else 10

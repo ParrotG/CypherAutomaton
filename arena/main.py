@@ -92,7 +92,7 @@ def _results_payload(
 
 def _preload_static(client, ch: dict[str, Any], work_root: Path) -> tuple[int, list[str]]:
     cid = int(ch["id"])
-    cdir = work_root / str(cid)
+    cdir = work_root / str(cid) / "shared"
     return cid, prepare_files(client, ch, cdir)
 
 
@@ -284,6 +284,11 @@ def main() -> int:
                         "error": f"{type(exc).__name__}: {exc}",
                     }
                 results.append(result)
+                if result.get("requeue") and not result.get("solved"):
+                    if _is_dynamic(ch):
+                        dynamic_queue.append(ch)
+                    else:
+                        static_queue.append(ch)
                 payload = _results_payload(mode, results)
                 _write_json(results_path, payload)
                 print(

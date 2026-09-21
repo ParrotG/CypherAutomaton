@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -248,6 +250,36 @@ class ArenaBrainTests(unittest.TestCase):
             result = brain.solve("solve this")
         self.assertFalse(result["solved"])
         self.assertEqual(result["error"], "token_budget_exhausted")
+
+    def test_explicit_deadline_stops_attempt(self) -> None:
+        model = ScriptedModel([plain_reply("should not be called")])
+        brain = Brain(
+            run_bash=lambda _cmd: "",
+            submit_flag=lambda _flag: {},
+            max_steps=5,
+            model=model,
+            deadline=time.monotonic() - 1.0,
+        )
+        result = brain.solve("solve this")
+        self.assertFalse(result["solved"])
+        self.assertEqual(result["error"], "challenge_timeout")
+        self.assertEqual(model.calls, 0)
+
+    def test_stop_event_stops_attempt(self) -> None:
+        model = ScriptedModel([plain_reply("should not be called")])
+        stop = threading.Event()
+        stop.set()
+        brain = Brain(
+            run_bash=lambda _cmd: "",
+            submit_flag=lambda _flag: {},
+            max_steps=5,
+            model=model,
+            stop_event=stop,
+        )
+        result = brain.solve("solve this")
+        self.assertFalse(result["solved"])
+        self.assertEqual(result["error"], "agent_stopped")
+        self.assertEqual(model.calls, 0)
 
     def test_no_tool_progress_stops_plain_streak(self) -> None:
         model = ScriptedModel([plain_reply("a"), plain_reply("b")])

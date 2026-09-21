@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from typing import Any
 
 from .events import EventLogger
@@ -73,6 +75,8 @@ class AgentRuntime:
         context_reserve_tokens: int = 8_000,
         max_total_tokens: int | None = None,
         max_plain_replies: int = 3,
+        deadline: float | None = None,
+        stop_event: threading.Event | None = None,
         events: EventLogger | None = None,
     ) -> None:
         self.model = model
@@ -88,6 +92,8 @@ class AgentRuntime:
         else:
             self.max_total_tokens = max(1, int(max_total_tokens))
         self.max_plain_replies = max(1, int(max_plain_replies))
+        self.deadline = deadline
+        self.stop_event = stop_event
         self.events = events or EventLogger(None)
 
     def _log(self, kind: str, **payload: Any) -> None:
@@ -128,6 +134,22 @@ class AgentRuntime:
         plain_reply_streak = 0
 
         for step in range(1, self.max_steps + 1):
+            if self.stop_event is not None and self.stop_event.is_set():
+                result = {"solved": False, "steps": step - 1, "error": "agent_stopped"}
+                self._log("agent_stopped", **result)
+                self._log("run_end", result=result)
+                return result
+            if self.deadline is not None and time.monotonic() >= self.deadline:
+                result = {
+                    "solved": False,
+                    "steps": step - 1,
+                    "error": "challenge_timeout",
+                    "timeout": True,
+                }
+                self._log("challenge_timeout", **result)
+                self._log("run_end", result=result)
+                return result
+
             estimated_prompt_tokens = self._estimate_next_prompt_tokens(
                 messages,
                 baseline_tokens=baseline_prompt_tokens,
@@ -155,7 +177,7 @@ class AgentRuntime:
                 context_limit_tokens=self.context_limit_tokens,
             )
             try:
-                reply = self.model.chat(messages, TOOL_SCHEMAS)
+                reply = self.model.chat(messages, TOOL_SCHEMAS, deadline=self.deadline)
             except ModelError as exc:
                 result = {"solved": False, "steps": step, "error": f"ModelError: {exc}"}
                 self._log("model_error", **result)
