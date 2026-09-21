@@ -14,8 +14,32 @@
 ```text
 1. raw TCP: HOST:PORT / `nc HOST PORT`  -> bridge 完成 PoW
 2. URL:     http://... / https://...    -> worker 直接访问，无 PoW
-3. files:   local file or directory     -> 每个 worker 独立只读副本，无 PoW
+3. files:   local file or directory     -> 每个 worker 获得独立副本（agent 可在 workspace 内修改副本），原文件不变，无 PoW
 ```
+
+### 命令占位符约定
+
+README 命令中的尖括号占位符表示需要按实际环境替换；替换时请连同尖括号一起替换：
+
+- `<HOST>`、`<PORT>`：raw TCP 题目地址和端口，例如 `10.0.0.1:30068`。
+- `<TARGET>`：交给 Agent/Scheduler 的 target，可为 raw TCP、HTTP(S) URL、文件或目录。
+- `<TARGET_URL>`：HTTP(S) 题目 URL。
+- `<CHALLENGE_FILES_DIR>`：本地 challenge 文件或目录路径。
+- `<TASK_ID>`：任务 id，例如 `Zip` 或 `pwn-task`。
+- `<TASK_DESCRIPTION_FILE>`：宿主机上的题目描述文件路径。
+- `<RUN_ID>`：worker run id，例如 `w0001`。
+- `<ATTEMPT_ID>`：scheduler attempt id，形如 `attempt-YYYYMMDDTHHMMSSZ-xxxxxx`。
+- `<RUN_DIR>`：Agent run/state 目录路径，例如 `.cypher_bridge/worker/<RUN_ID>`。
+- `<CONNECTOR_ID>`：bridge connector id，例如 `worker-a`。
+- `<LOCAL_BRIDGE_PORT>`：bridge 为本 connector 分配的本地 TCP 端口。
+- `<ENV_FILE>`：私密 env 文件路径，默认 `.env.local`。
+- `<BRIDGE_API_PORT>`：Bridge HTTP API 端口，默认 `8765`。
+- `<BRIDGE_STATE_DIR>`：Bridge 状态目录，默认 `.cypher_bridge/bridge`。
+- `<MAX_HANDSHAKES>`：Bridge 最大并发 PoW 握手数，默认 `4`。
+- `<STATE_DIR>`：运行状态目录，例如 `.cypher_bridge/scheduler`。
+- `<N_CONCURRENT>`、`<N_TOTAL>`：并发 worker 上限和总 worker 上限。
+- `<REVIEW_FEEDBACK>`：人工 review 时反馈给 Agent 的失败原因或建议。
+- `<HOST_CHALLENGE_FILES_DIR>`、`<HOST_TASK_DESCRIPTION_FILE>`：Docker bind mount 使用的宿主机绝对路径。
 
 ---
 
@@ -126,10 +150,10 @@ upstream generation、本地 Agent endpoint 和事件日志。
 ```bash
 uv run python -m incypher_bridge serve \
   --api-host 127.0.0.1 \
-  --api-port 8765 \
-  --state-dir .cypher_bridge/bridge \
-  --env-file .env.local \
-  --max-handshakes 4
+  --api-port <BRIDGE_API_PORT> \
+  --state-dir <BRIDGE_STATE_DIR> \
+  --env-file <ENV_FILE> \
+  --max-handshakes <MAX_HANDSHAKES>
 ```
 
 ### HTTP API
@@ -147,11 +171,11 @@ uv run python -m incypher_bridge serve \
 创建 connector：
 
 ```bash
-curl -X POST http://127.0.0.1:8765/connectors \
+curl -X POST http://127.0.0.1:<BRIDGE_API_PORT>/connectors \
   -H 'Content-Type: application/json' \
   -d '{
-    "connector_id": "worker-a",
-    "target": "47.236.162.54:30068",
+    "connector_id": "<CONNECTOR_ID>",
+    "target": "<HOST>:<PORT>",
     "auto_reconnect": true
   }'
 ```
@@ -175,7 +199,7 @@ curl -X POST http://127.0.0.1:8765/connectors \
 ```python
 from solver import connect
 
-s = connect("47.236.162.54", 30068)
+s = connect("<HOST>", <PORT>)
 # 省略 team_key 时从 .env.local 安全加载
 ```
 
@@ -184,7 +208,7 @@ s = connect("47.236.162.54", 30068)
 ```python
 from solver import connect_bridge
 
-s = connect_bridge(46385)
+s = connect_bridge(<LOCAL_BRIDGE_PORT>)
 ```
 
 ---
@@ -214,30 +238,30 @@ Agent 是一个最小 model-tool loop：
 
 ```bash
 uv run python -m incypher_agent run \
-  --run-dir .cypher_bridge/worker \
-  --agent-endpoint tcp://127.0.0.1:46385 \
-  --description-file ./task.md
+  --run-dir <RUN_DIR> \
+  --agent-endpoint tcp://127.0.0.1:<LOCAL_BRIDGE_PORT> \
+  --description-file <TASK_DESCRIPTION_FILE>
 ```
 
 直接处理 URL 或文件任务：
 
 ```bash
 uv run python -m incypher_agent run \
-  --run-dir .cypher_bridge/worker \
-  --target /workspace/challenge_files \
-  --description-file ./task.md
+  --run-dir <RUN_DIR> \
+  --target <TARGET> \
+  --description-file <TASK_DESCRIPTION_FILE>
 ```
 
 真实模型连通性检查：
 
 ```bash
-uv run python -m incypher_agent smoke
+uv run python -m incypher_agent smoke --env-file <ENV_FILE>
 ```
 
 查看状态：
 
 ```bash
-uv run python -m incypher_agent show --run-dir .cypher_bridge/worker
+uv run python -m incypher_agent show --run-dir <RUN_DIR>
 ```
 
 ### Flag 与验证
@@ -300,29 +324,29 @@ Raw TCP：
 
 ```bash
 uv run python -m incypher_scheduler run \
-  --task-id pwn-task \
-  --target 47.236.162.54:30068 \
-  --description-file ./task.md \
-  --max-concurrent-workers 2 \
-  --max-total-workers 4
+  --task-id <TASK_ID> \
+  --target <HOST>:<PORT> \
+  --description-file <TASK_DESCRIPTION_FILE> \
+  --max-concurrent-workers <N_CONCURRENT> \
+  --max-total-workers <N_TOTAL>
 ```
 
 URL：
 
 ```bash
 uv run python -m incypher_scheduler run \
-  --task-id web-task \
-  --target https://target.example/challenge \
-  --description-file ./task.md
+  --task-id <TASK_ID> \
+  --target <TARGET_URL> \
+  --description-file <TASK_DESCRIPTION_FILE>
 ```
 
 文件/目录：
 
 ```bash
 uv run python -m incypher_scheduler run \
-  --task-id file-task \
-  --target ./downloaded-files \
-  --description-file ./task.md
+  --task-id <TASK_ID> \
+  --target <CHALLENGE_FILES_DIR> \
+  --description-file <TASK_DESCRIPTION_FILE>
 ```
 
 ### Attempts 与 Worker
@@ -342,15 +366,15 @@ uv run python -m incypher_scheduler run \
 查看候选：
 
 ```bash
-uv run python -m incypher_scheduler candidates --task-id Zip
+uv run python -m incypher_scheduler candidates --task-id <TASK_ID>
 ```
 
 反馈成功：
 
 ```bash
 uv run python -m incypher_scheduler review \
-  --task-id Zip \
-  --run-id w0001 \
+  --task-id <TASK_ID> \
+  --run-id <RUN_ID> \
   --result success
 ```
 
@@ -358,25 +382,29 @@ uv run python -m incypher_scheduler review \
 
 ```bash
 uv run python -m incypher_scheduler review \
-  --task-id Zip \
-  --run-id w0001 \
+  --task-id <TASK_ID> \
+  --run-id <RUN_ID> \
   --result failed \
-  --feedback "INCYPHER{f989c670} rejected; try the central directory CRC"
+  --feedback "<REVIEW_FEEDBACK>"
 ```
 
 `review` 不传 `--attempt-id` 时自动选择包含该 `run_id` 的最新 attempt；
 也可以显式指定：
 
 ```bash
---attempt-id attempt-20260919T184322Z-cd59f7
+uv run python -m incypher_scheduler review \
+  --task-id <TASK_ID> \
+  --run-id <RUN_ID> \
+  --attempt-id <ATTEMPT_ID> \
+  --result success
 ```
 
 立即退出模式：
 
 ```bash
 uv run python -m incypher_scheduler run \
-  --task-id Zip \
-  --target ./sample_challenges/files/Zip \
+  --task-id <TASK_ID> \
+  --target <CHALLENGE_FILES_DIR> \
   --no-wait-verification
 ```
 
@@ -439,6 +467,16 @@ Scheduler 会在 worker 正常或异常退出时写一条极小系统记录：
 
 Docker 用于部署本项目程序，不用于把 Agent workspace 变成容器。
 
+### 前置准备
+
+在 `docker run` 之前，先根据目标选择准备动作：
+
+- 只要运行 Bridge：可以 `docker build -t incypher-agent-stack .` 后直接 `docker run`，也可以直接 `docker compose up --build`。
+- 运行 Scheduler/Agent（容器内会启动 embedded bridge）：至少先执行一次 `docker build -t incypher-agent-stack .`；不需要 compose。
+- 需要常驻 Bridge 服务、供其他进程通过 `--bridge-url` 连接，或需要长期管理 connector：执行 `docker compose up --build`。Compose 会构建同一镜像并启动 Bridge，端口限制在 `127.0.0.1:8765`。
+- 运行前先执行 `mkdir -p .cypher_bridge`，确保该目录存在且当前宿主用户可写；同时确保 `.env.local` 已存在且权限为 `0600`。
+- 在 rootless Docker / user namespace remap 环境中，容器内 root 写入 bind mount 后，宿主机可能看到 `nobody:nogroup` 所有、`agent/` 为 `0700`，从而无法直接查看。给 Scheduler/Agent 的 `docker run` 增加 `--user "$(id -u):$(id -g)"` 可让输出文件归当前宿主用户。
+
 ### 构建
 
 ```bash
@@ -477,25 +515,32 @@ Scheduler/Agent 需要动态目标参数，而且依赖 bubblewrap 的 namespace
 
 ### 在 Docker 中运行 Scheduler/Agent
 
-由于 Scheduler 会在容器内启动 bwrap sandbox worker，通常需要额外权限。
-例如：
+由于 Scheduler 会在容器内启动 bwrap sandbox worker，通常需要额外权限，并建议使用宿主 UID/GID。
 
 ```bash
 docker run --rm -it \
   --privileged \
+  --user "$(id -u):$(id -g)" \
   -v "$PWD/.cypher_bridge:/app/.cypher_bridge" \
   -v "$PWD/.env.local:/app/.env.local:ro" \
-  -v "$PWD/sample_challenges/files/Zip:/challenge-files:ro" \
+  -v "<HOST_CHALLENGE_FILES_DIR>:/challenge-files:ro" \
+  -v "<HOST_TASK_DESCRIPTION_FILE>:/description.md:ro" \
   incypher-agent-stack \
   incypher-scheduler run \
-    --task-id Zip \
+    --task-id <TASK_ID> \
     --target /challenge-files \
+    --description-file /description.md \
     --env-file /app/.env.local \
-    --max-concurrent-workers 1 \
-    --max-total-workers 1
+    --max-concurrent-workers <N_CONCURRENT> \
+    --max-total-workers <N_TOTAL> \
+    --no-wait-verification
 ```
 
-如果宿主机允许较细粒度权限，也可以尝试：
+说明：
+
+- `<HOST_CHALLENGE_FILES_DIR>`、`<HOST_TASK_DESCRIPTION_FILE>` 需替换为宿主机绝对路径；如果没有题目描述文件，可删除对应的 `-v` 和 `--description-file`。
+- Docker 模式推荐默认加 `--no-wait-verification`：否则 worker 会等待容器内 `verification.json`，跨容器人工 review 操作更麻烦；需要人工验证时删除该参数，并通过挂载到同一 state 目录的 `incypher-scheduler review` 写入验证结果。
+- 如果宿主机允许较细粒度权限，也可以尝试：
 
 ```text
 --security-opt seccomp=unconfined
