@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import json
+import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -35,6 +38,34 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "type": "object",
                 "properties": {"flag": {"type": "string"}},
                 "required": ["flag"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "view_image",
+            "description": (
+                "View a local challenge image in the work directory. "
+                "Supports common image formats and DICOM images. "
+                "The image is attached to the next model turn; use this for visual/medical/forensics analysis."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Image path inside the challenge work directory."},
+                    "prompt": {
+                        "type": "string",
+                        "description": "Optional instruction describing what to look for in the image.",
+                    },
+                    "max_side": {
+                        "type": "integer",
+                        "minimum": 128,
+                        "maximum": 2048,
+                        "description": "Maximum rendered side length (default 1024).",
+                    },
+                },
+                "required": ["path"],
             },
         },
     },
@@ -78,6 +109,7 @@ class ToolOutcome:
     solved: bool = False
     flag: str | None = None
     verdict: dict[str, Any] | None = None
+    images: list[str] = field(default_factory=list)
 
 
 def normalize_flag(raw_flag: str) -> str:
@@ -118,6 +150,8 @@ class ToolExecutor:
                 return self._run_bash(args)
             if name == "submit_flag":
                 return self._submit_flag(args)
+            if name == "view_image":
+                return self._view_image(args)
             if name == "str_replace_editor":
                 return self._editor(args)
             return ToolOutcome(content=json.dumps({"error": f"unknown tool: {name}"}))
@@ -150,6 +184,108 @@ class ToolExecutor:
             flag=normalized,
             verdict=verdict,
         )
+
+    # ------------------------------------------------------------------
+    # Image viewing
+    # ------------------------------------------------------------------
+    def _view_image(self, args: dict[str, Any]) -> ToolOutcome:
+        path = self._resolve_path(str(args.get("path", "")))
+        if not path.exists() or not path.is_file():
+            return ToolOutcome(content=json.dumps({"error": f"file does not exist: {path}"}))
+
+        raw_side = args.get("max_side") or os.environ.get("VIEW_IMAGE_MAX_SIDE", "1024")
+        try:
+            max_side = int(raw_side)
+        except (TypeError, ValueError):
+            max_side = 1024
+        max_side = max(128, min(2048, max_side))
+        max_bytes = int(os.environ.get("VIEW_IMAGE_MAX_BYTES", "4000000"))
+
+        try:
+            image, metadata = self._load_image(path)
+        except Exception as exc:  # noqa: BLE001 - report to model
+            return ToolOutcome(
+                content=json.dumps(
+                    {
+                        "error": f"unsupported or unreadable image: {type(exc).__name__}: {exc}",
+                        "path": str(path),
+                    }
+                )
+            )
+
+        image = image.convert("RGB")
+        original_size = image.size
+        image.thumbnail((max_side, max_side))
+
+        # Keep a single image comfortably under the model/context budget.
+        encoded = b""
+        for scale in (1.0, 0.7, 0.5, 0.35):
+            resized = image
+            if scale != 1.0:
+                size = (max(1, int(image.width * scale)), max(1, int(image.height * scale)))
+                resized = image.resize(size)
+            buf = io.BytesIO()
+            resized.save(buf, format="PNG", optimize=True)
+            encoded = buf.getvalue()
+            if len(encoded) <= max_bytes:
+                image = resized
+                break
+        if not encoded or len(encoded) > max_bytes:
+            return ToolOutcome(
+                content=json.dumps({"error": "image too large after resizing", "path": str(path)})
+            )
+
+        data_url = "data:image/png;base64," + base64.b64encode(encoded).decode("ascii")
+        prompt = str(args.get("prompt") or "").strip()
+        payload = {
+            "path": str(path),
+            "width": image.width,
+            "height": image.height,
+            "original_width": original_size[0],
+            "original_height": original_size[1],
+            "metadata": metadata,
+            "prompt": prompt,
+        }
+        return ToolOutcome(content=json.dumps(payload, ensure_ascii=False), images=[data_url])
+
+    def _load_image(self, path: Path):
+        """Return (PIL image, metadata dict), with optional DICOM fallback."""
+        try:
+            from PIL import Image
+
+            image = Image.open(path)
+            image.load()
+            return image, {"format": image.format or path.suffix.lstrip(".").lower()}
+        except Exception as pil_exc:  # try DICOM fallback
+            try:
+                import numpy as np
+                import pydicom
+                from PIL import Image
+
+                ds = pydicom.dcmread(str(path), force=True)
+                arr = np.asarray(ds.pixel_array)
+                if arr.ndim > 2:
+                    arr = arr[0]
+                arr = arr.astype(np.float32)
+                lo, hi = float(arr.min()), float(arr.max())
+                if hi > lo:
+                    arr = (arr - lo) / (hi - lo) * 255.0
+                arr = arr.astype(np.uint8)
+                if arr.ndim == 2:
+                    image = Image.fromarray(arr, mode="L").convert("RGB")
+                else:
+                    image = Image.fromarray(arr).convert("RGB")
+                metadata = {
+                    "format": "dicom",
+                    "modality": str(getattr(ds, "Modality", "") or ""),
+                    "rows": int(getattr(ds, "Rows", 0) or 0),
+                    "columns": int(getattr(ds, "Columns", 0) or 0),
+                }
+                return image, metadata
+            except Exception as dicom_exc:
+                raise ValueError(
+                    f"Pillow failed ({pil_exc}); DICOM fallback failed ({dicom_exc})"
+                ) from dicom_exc
 
     # ------------------------------------------------------------------
     # Host-side editor

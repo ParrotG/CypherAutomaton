@@ -16,8 +16,9 @@ files, and live connection info when present. Work only in the challenge work
 directory for downloaded files and scratch scripts.
 
 Use run_bash for concrete investigation and exploitation. Commands time out after
-120 seconds. Use submit_flag when you have a candidate `INCYPHER{...}` flag. If a
-submission is rejected, read the verdict and continue from the current context.
+120 seconds. Use view_image to inspect local image or DICOM files when visual
+analysis is useful. Use submit_flag when you have a candidate `INCYPHER{...}` flag.
+If a submission is rejected, read the verdict and continue from the current context.
 Do not fabricate flags and do not ask for human help.
 """
 
@@ -39,6 +40,20 @@ def _estimate_text_tokens(text: Any) -> int:
 
 
 def _estimate_message_tokens(message: dict[str, Any]) -> int:
+    content = message.get("content")
+    if isinstance(content, list):
+        # OpenAI-style multi-part messages may contain base64 data URLs.  Do
+        # not estimate image bytes as text tokens; use a fixed vision cost.
+        total = 16
+        for part in content:
+            if not isinstance(part, dict):
+                total += _estimate_text_tokens(str(part))
+                continue
+            if part.get("type") == "image_url":
+                total += 1024
+            else:
+                total += _estimate_text_tokens(part.get("text") or json.dumps(part, default=str))
+        return total
     return _estimate_text_tokens(json.dumps(message, ensure_ascii=False, default=str))
 
 
@@ -237,6 +252,7 @@ class AgentRuntime:
                     solved=outcome.solved,
                     flag=outcome.flag,
                     verdict=outcome.verdict,
+                    image_count=len(outcome.images),
                 )
                 messages.append(
                     {
@@ -245,6 +261,24 @@ class AgentRuntime:
                         "content": outcome.content,
                     }
                 )
+                if outcome.images:
+                    image_message = {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "Image attachment from view_image. "
+                                    "Analyze the image and use it together with the rest of the challenge context."
+                                ),
+                            },
+                            *[
+                                {"type": "image_url", "image_url": {"url": data_url}}
+                                for data_url in outcome.images
+                            ],
+                        ],
+                    }
+                    messages.append(image_message)
                 if outcome.solved:
                     result = {
                         "solved": True,

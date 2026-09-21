@@ -17,9 +17,11 @@ class ScriptedModel:
     def __init__(self, script: list[ModelReply]) -> None:
         self.script = list(script)
         self.calls = 0
+        self.history: list[list[dict]] = []
 
     def chat(self, messages, tools, *, deadline=None):
         self.calls += 1
+        self.history.append(list(messages))
         if not self.script:
             raise AssertionError("scripted model exhausted")
         return self.script.pop(0)
@@ -185,6 +187,43 @@ class ArenaBrainTests(unittest.TestCase):
                 max_steps=123,
             )
         self.assertEqual(brain.max_steps, 123)
+
+    def test_view_image_attaches_image_to_next_turn(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as temp:
+            image_path = Path(temp) / "challenge.png"
+            Image.new("RGB", (64, 32), color=(200, 10, 20)).save(image_path)
+            model = ScriptedModel(
+                [
+                    tool_reply("c1", "view_image", {"path": "challenge.png"}),
+                    plain_reply("done"),
+                ]
+            )
+            brain = Brain(
+                run_bash=lambda _cmd: "",
+                submit_flag=lambda _flag: {},
+                max_steps=5,
+                model=model,
+                workspace_dir=temp,
+            )
+            result = brain.solve("look at the image")
+
+        self.assertFalse(result["solved"])
+        second_turn = model.history[1]
+        image_messages = [
+            message
+            for message in second_turn
+            if isinstance(message.get("content"), list)
+            and any(part.get("type") == "image_url" for part in message["content"] if isinstance(part, dict))
+        ]
+        self.assertEqual(len(image_messages), 1)
+        image_url = [
+            part["image_url"]["url"]
+            for part in image_messages[0]["content"]
+            if isinstance(part, dict) and part.get("type") == "image_url"
+        ][0]
+        self.assertTrue(image_url.startswith("data:image/png;base64,"))
 
     def test_token_budget_stops_attempt(self) -> None:
         model = ScriptedModel(

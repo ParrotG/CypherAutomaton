@@ -14,7 +14,7 @@ ENV PYTHONPATH=/opt/agent \
     LLM_BASE_URL=${DAY1_LLM_BASE_URL} \
     LLM_MODEL=${DAY1_LLM_MODEL}
 
-RUN pip install --no-cache-dir "openai>=1.0,<2"
+RUN pip install --no-cache-dir "openai>=1.0,<2" "Pillow>=10.0" "numpy>=1.26" "pydicom>=2.4"
 
 # Official base already provides /opt/agent/ctfd.py and the toolchain.
 COPY arena /opt/agent/arena
