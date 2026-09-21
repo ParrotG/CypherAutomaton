@@ -231,6 +231,9 @@ SUBMIT_FLAGS=0
 ONLY_IDS=17,19,24,90
 CATEGORIES=web,pwn
 MAX_CONCURRENT_CHALLENGES=2
+AGENTS_PER_CHALLENGE=2
+DYNAMIC_AGENTS_PER_CHALLENGE=2
+CHALLENGE_TIME_LIMIT_SECONDS=3600
 ```
 
 调度策略：
@@ -350,6 +353,11 @@ docker push registry.in-cypher.com:5001/team-<id>/agent:latest
 - 平台 API 瞬时错误自动重试；
 - 累计 token 预算 + 连续无 tool call 保险丝；
 - `ARENA_MODE=auto` 自动区分 Day 1 practice / Day 2 competition；
+- 单题内默认 2 个并行 agent；每个 agent 独立 workdir，互不读取对方文件；
+- 单题所有 agent 退出后，将各自 summary 追加到同一个 `summary.txt`，写入时用线程锁串行化；
+- raw TCP 动态题若开启多 agent，会启动本地串行 TCP gateway，PoW 也由 gateway 处理；
+- `CHALLENGE_TIME_LIMIT_SECONDS` 默认 3600 秒；超时后停止 agent、destroy dynamic，并把题目重新排到队尾；
+- bash 子进程可以正常使用 `curl`/`wget` 等外网工具，生产 sandbox 的 `--network bridge` 已允许出网；
 - `max_steps` + `context_window_tokens` 双预算；
 - 失败 attempt 生成 deterministic summary，支持下一 attempt 继承；
 - `SUBMIT_FLAGS=0` 拦截提交并模拟成功；

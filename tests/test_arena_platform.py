@@ -96,6 +96,17 @@ class SubmitBrain:
         }
 
 
+class RecordingBrain:
+    records: list[dict] = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        RecordingBrain.records.append(kwargs)
+
+    def solve(self, prompt: str) -> dict:
+        return {"solved": False, "steps": 1, "error": "not_solved"}
+
+
 class ArenaPlatformTests(unittest.TestCase):
     def test_practice_detection(self) -> None:
         self.assertTrue(is_practice({"category": "(Practice) web"}))
@@ -217,7 +228,9 @@ class ArenaPlatformTests(unittest.TestCase):
     def test_solve_challenge_retries_with_summary(self) -> None:
         RetryBrain.instances = []
         client = FakeClient()
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"AGENTS_PER_CHALLENGE": "1"}, clear=False
+        ):
             result = solve_challenge(
                 client,
                 {
@@ -234,12 +247,51 @@ class ArenaPlatformTests(unittest.TestCase):
                 brain_factory=RetryBrain,
                 work_root=Path(temp),
             )
-            summary_file = Path(temp) / "90" / "attempts" / "001" / "summary.json"
+            summary_file = Path(temp) / "90" / "attempts" / "001" / "summary.txt"
             self.assertTrue(summary_file.is_file())
             second_prompt = RetryBrain.instances[1].prompt
         self.assertTrue(result["solved"])
         self.assertEqual(result["attempt_count"], 2)
         self.assertIn("Previous attempt summary", second_prompt)
+
+    def test_multi_agent_uses_independent_workspaces(self) -> None:
+        RecordingBrain.records = []
+        client = FakeClient()
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"AGENTS_PER_CHALLENGE": "2"}, clear=False
+        ):
+            result = solve_challenge(
+                client,
+                {
+                    "id": 90,
+                    "name": "Dear Diary",
+                    "category": "(Practice) forensics",
+                    "points": 100,
+                    "type": "standard",
+                    "description": "diary",
+                    "files": [],
+                },
+                max_steps=1,
+                max_attempts=1,
+                brain_factory=RecordingBrain,
+                work_root=Path(temp),
+            )
+        workspaces = {record["workspace_dir"] for record in RecordingBrain.records}
+        self.assertEqual(len(workspaces), 2)
+        self.assertTrue(all("/agents/agent-" in path for path in workspaces))
+        self.assertEqual(result["agents_per_challenge"], 2)
+
+    def test_agent_workspace_path_policy_blocks_escapes(self) -> None:
+        client = FakeClient()
+        with tempfile.TemporaryDirectory() as temp:
+            agent_dir = Path(temp) / "90" / "agents" / "agent-0"
+            agent_dir.mkdir(parents=True)
+            (agent_dir / "ok.txt").write_text("ok", encoding="utf-8")
+            run_bash = make_run_bash(agent_dir)
+            self.assertIn("blocked", run_bash("cat ../shared/secret"))
+            self.assertIn("blocked", run_bash("cat /work/90/shared/secret"))
+            self.assertIn("blocked", run_bash("cat /work/90/agents/agent-1/other"))
+            self.assertIn("ok", run_bash("cat ok.txt"))
 
     def test_prepare_files_downloads_into_challenge_dir(self) -> None:
         client = FakeClient()

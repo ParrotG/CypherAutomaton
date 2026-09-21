@@ -203,6 +203,44 @@ class ArenaMainTests(unittest.TestCase):
         self.assertEqual(state["max_dyn"], 1)
         self.assertTrue(state["overlap"])
 
+    def test_timed_out_challenge_is_requeued_to_tail(self) -> None:
+        challenges = [
+            {"id": 1, "name": "A", "category": "web", "points": 100, "type": "standard"},
+            {"id": 2, "name": "B", "category": "web", "points": 100, "type": "standard"},
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            calls: list[int] = []
+
+            def fake_solve(client, ch, *, max_steps, max_attempts, work_root, events_path, prepared_filenames):
+                calls.append(int(ch["id"]))
+                if int(ch["id"]) == 1 and calls.count(1) == 1:
+                    return {
+                        "id": ch["id"],
+                        "name": ch["name"],
+                        "solved": False,
+                        "error": "challenge_timeout",
+                        "requeue": True,
+                        "seconds": 0.01,
+                    }
+                return {"id": ch["id"], "name": ch["name"], "solved": True, "steps": 1, "seconds": 0.01}
+
+            env = {
+                "ARENA_MODE": "competition",
+                "WORK_ROOT": temp,
+                "RESULTS_PATH": str(Path(temp) / "results.json"),
+                "MAX_CONCURRENT_CHALLENGES": "1",
+            }
+            with patch.dict(os.environ, env, clear=False), patch(
+                "arena.main.connect_from_env", return_value=FakeClient(challenges)
+            ), patch("arena.main.prepare_files", return_value=[]), patch(
+                "arena.main.solve_challenge", side_effect=fake_solve
+            ):
+                code = arena_main.main()
+            results = json.loads((Path(temp) / "results.json").read_text(encoding="utf-8"))
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [1, 2, 1])
+        self.assertEqual(results["solved"], 2)
+
     def test_main_loads_full_challenge_details(self) -> None:
         challenges = [
             {
