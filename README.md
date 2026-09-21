@@ -1,617 +1,379 @@
-# IN-CYPHER autonomous agent stack
+# IN-CYPHER Arena Agent 接手说明
 
-This project provides a standalone autonomous challenge-solving infrastructure for the IN-CYPHER Hackathon:
+本仓库现已进入“官方 Agent Arena 提交物”阶段。旧的自建 Bridge / Scheduler / Blackboard 实现保留在 `src/` 中，但当前 Docker 镜像和新开发入口以 `arena/` 为准。
 
-- `incypher_bridge`: a multi-agent middle layer for raw TCP + PoW challenges.
-- `incypher_agent`: a minimal model-tool loop, using a DeepSeek-compatible API by default.
-- `incypher_scheduler`: a task-blind scheduler that creates bridge connectors and workers,
-  maintains concurrent/total worker limits, and supports raw TCP, HTTP(S) URL, and local file/directory targets.
-- Blackboard: a task-level shared record board that lets concurrent workers and later workers
-  pull summaries of completed work.
-- Docker: provides a deployable Bridge service and Scheduler/Agent runtime images.
-
-Currently supported challenge input modes:
+当前活跃提交：
 
 ```text
-1. raw TCP: HOST:PORT / `nc HOST PORT`  -> bridge handles PoW
-2. URL:     http://... / https://...    -> worker accesses directly, no PoW
-3. files:   local file or directory     -> each worker gets an independent copy (the agent may modify its workspace copy); original files stay unchanged; no PoW
+7a9461a stage 10: full challenge prompts, OpenRouter defaults, bash policy, log size fix
 ```
 
-### Command placeholder convention
+当前分支：`master`。旧 `origin/master` 可能落后，接手时先执行：
 
-Angle-bracket placeholders in README commands must be replaced with values from your actual environment. Replace the angle brackets themselves as well:
-
-- `<HOST>`, `<PORT>`: raw TCP challenge host and port, e.g. `10.0.0.1:30068`.
-- `<TARGET>`: target passed to Agent/Scheduler; can be raw TCP, an HTTP(S) URL, a file, or a directory.
-- `<TARGET_URL>`: HTTP(S) challenge URL.
-- `<CHALLENGE_FILES_DIR>`: local challenge file or directory path.
-- `<TASK_ID>`: task id, e.g. `Zip` or `pwn-task`.
-- `<TASK_DESCRIPTION_FILE>`: path to the challenge description file on the host.
-- `<RUN_ID>`: worker run id, e.g. `w0001`.
-- `<ATTEMPT_ID>`: scheduler attempt id, formatted like `attempt-YYYYMMDDTHHMMSSZ-xxxxxx`.
-- `<RUN_DIR>`: Agent run/state directory path, e.g. `.cypher_bridge/worker/<RUN_ID>`.
-- `<CONNECTOR_ID>`: bridge connector id, e.g. `worker-a`.
-- `<LOCAL_BRIDGE_PORT>`: local TCP port assigned by the bridge for this connector.
-- `<ENV_FILE>`: private env file path, default `.env.local`.
-- `<BRIDGE_API_PORT>`: Bridge HTTP API port, default `8765`.
-- `<BRIDGE_STATE_DIR>`: Bridge state directory, default `.cypher_bridge/bridge`.
-- `<MAX_HANDSHAKES>`: maximum concurrent PoW handshakes for the Bridge, default `4`.
-- `<STATE_DIR>`: runtime state directory, e.g. `.cypher_bridge/scheduler`.
-- `<N_CONCURRENT>`, `<N_TOTAL>`: concurrent worker limit and total worker limit.
-- `<REVIEW_FEEDBACK>`: failure reason or guidance returned to the Agent during manual review.
-- `<HOST_CHALLENGE_FILES_DIR>`, `<HOST_TASK_DESCRIPTION_FILE>`: absolute host paths used for Docker bind mounts.
+```bash
+git status
+git log --oneline --decorate -20
+```
 
 ---
 
-## Directory layout
+## 1. 项目目标
+
+按照官方 `CONTRACT.md`，本项目最终需要提交一个 Docker 镜像，镜像内是能够**无人干预地获取题目、解题、提交 flag** 的自主 agent。
+
+官方提交方式：
+
+```text
+registry.in-cypher.com:5001/team-<team_id>/agent:latest
+```
+
+当前实现位于：
+
+```text
+arena/
+```
+
+旧实现位于：
+
+```text
+src/incypher_bridge/
+src/incypher_scheduler/
+src/incypher_agent/
+```
+
+旧实现不再作为 Docker 入口，后续应在合适阶段删除或归档。
+
+---
+
+## 2. 当前目录结构
 
 ```text
 .
-├── Dockerfile
-├── compose.yaml
-├── pyproject.toml
-├── uv.toml
-├── .env.local                 # 0600 private configuration
-├── .env.local.example
+├── Dockerfile                  # 基于官方 agent-base 的新镜像
+├── .dockerignore
+├── .env.local.example          # 本地开发配置模板
 ├── README.md
 ├── docs/
-│   └── 工程说明.md
-├── src/
-│   ├── bridge.py              # python bridge.py ... wrapper
-│   ├── solver.py              # compatible solver.connect / connect_bridge
-│   ├── incypher_bridge/       # FastAPI + asyncio bridge
-│   ├── incypher_agent/        # minimal model-tool agent
-│   └── incypher_scheduler/    # task-blind scheduler
-└── tests/
+│   └── 工程说明.md             # 详细接手说明
+├── arena/
+│   ├── BASELINE.md             # 官方 agent-base 基线
+│   ├── official/               # 官方 /opt/agent 文件快照
+│   ├── brain.py                # 官方 Brain 接口实现
+│   ├── main.py                 # 全局调度器 / 容器入口
+│   ├── platform.py             # 官方 CTF Agent API 封装
+│   ├── solver.py               # 单题编排、summary/retry
+│   ├── run_once.py             # 单题端到端 CLI
+│   ├── smoke.py                # LLM 连通性冒烟
+│   ├── api_probe.py            # 只读官方 API 探测
+│   └── runtime/
+│       ├── model.py            # OpenAI-compatible / OpenRouter 客户端
+│       ├── loop.py             # model-tool loop + context budget
+│       ├── tools.py            # run_bash / submit_flag / editor
+│       ├── events.py           # JSONL 事件日志
+│       └── summary.py          # attempt summary
+├── src/                        # 旧 Bridge/Scheduler/Agent（待清理）
+└── tests/                      # 新旧测试混合
 ```
 
 ---
 
-## Local installation
+## 3. 外部权威材料
 
-Requires Python 3.10+; `uv` is recommended:
+必须优先参考以下材料：
 
-```bash
-uv venv --python 3.10
-uv sync
-```
+| 来源 | 用途 |
+|---|---|
+| `https://hackathonlive.in-cypher.com/` | 提交入口、重跑入口 |
+| `https://hackathonlive.in-cypher.com/usage` | 官方使用说明 |
+| `https://hackathonlive.in-cypher.com/status` | 运行/提交状态板 |
+| `https://hackathonlive.in-cypher.com/dashboard` | 资源 dashboard |
+| `arena/official/CONTRACT.md` | 官方契约，最权威 |
+| `arena/official/ctfd.py` | 官方平台客户端与 API 行为 |
+| `arena/official/main.py` / `solver.py` / `brain.py` | 官方参考 harness |
+| `arena/official/check_agent.sh` | 官方镜像检查脚本 |
+| OpenRouter 模型信息 | `deepseek/deepseek-v4.1-flash`：text+image，1M context |
 
-Initialize the shared Agent Python tool environment:
-
-```bash
-uv run python -m incypher_agent sandbox-init
-```
-
-The default tool environment is located at:
-
-```text
-.cypher_bridge/agent-tools/
-```
-
-Preinstalled packages:
+官方基础镜像：
 
 ```text
-pwntools
-requests
-pycryptodome
-z3-solver
-pyelftools
-virtualenv
+registry.in-cypher.com:5001/base/agent-base:latest
 ```
 
-The Agent may create its own venv inside the workspace to add dependencies:
+当前固定 digest 见 `arena/BASELINE.md`：
+
+```text
+sha256:d3c707c6187f49a8b5f0ba617b9590cce72a18676d93343a93098726c7723224
+```
+
+重新拉取/解包官方文件：
 
 ```bash
-python -m virtualenv .venv
-.venv/bin/pip install <package>
+docker pull registry.in-cypher.com:5001/base/agent-base:latest
+
+mkdir -p /tmp/official-agent
+docker run --rm --entrypoint tar \
+  registry.in-cypher.com:5001/base/agent-base:latest \
+  -cf - -C /opt agent | tar -xf - -C /tmp/official-agent
 ```
 
 ---
 
-## Configuring `.env.local`
+## 4. 本地配置 `.env.local`
 
 ```bash
 cp .env.local.example .env.local
 chmod 600 .env.local
 ```
 
-Required:
+常用字段：
 
 ```dotenv
-CYPHER_TEAM_KEY=...
+# 官方平台（本地 live test 用）
+CTF_BASE=https://hackathon.in-cypher.com
+CTF_TOKEN=ctfd_...
+
+# 本地模型 provider 选择：deepseek 或 openrouter
+LLM_PROVIDER=deepseek
+
+# DeepSeek 直连
 DEEPSEEK_API_KEY=...
-```
-
-Optional:
-
-```dotenv
 DEEPSEEK_BASE_URL=https://api.deepseek.com
-CYPHER_THINKING=disabled
+DEEPSEEK_MODEL=deepseek-flash
+
+# OpenRouter
+OPENROUTER_API_KEY=...
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_MODEL=deepseek/deepseek-v4.1-flash
+
+# Loop / context
+MAX_STEPS=1000000
+MAX_ATTEMPTS=3
+CONTEXT_WINDOW_TOKENS=1000000
+CONTEXT_RESERVE_TOKENS=8000
+
+# flag 提交开关：0 = 拦截并模拟成功，1 = 真实提交
+SUBMIT_FLAGS=1
+
+# 调度并发
+MAX_CONCURRENT_CHALLENGES=2
+PRELOAD_WORKERS=2
 ```
 
-Rules:
+说明：
 
-- `.env.local` must be `0600`.
-- `DEEPSEEK_API_KEY` is read only from `.env.local`; it is not read from process environment variables, and there is no multi-level fallback.
-- Missing, empty, whitespace-containing, or obviously too-short API keys cause the program to error out.
-- The model name is not configured in `.env.local`; it is determined by `--model` or the default value in `config.py`.
-- `CYPHER_TEAM_KEY` is used only for local HMAC PoW. It is never sent to the remote and never written to logs.
-- Do not put `.env.local` inside the Agent workspace.
+- `deepseek-flash` 与 `deepseek/deepseek-v4.1-flash` 是同一目标模型的不同 provider 表示；
+- OpenRouter 路径默认会自动附带：
+  ```json
+  "reasoning": {"effort": "high"},
+  "provider": {"order": ["deepseek"], "allow_fallbacks": true}
+  ```
+- 官方 arena 运行时注入 `CTF_TOKEN` / `CTF_BASE` / `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`；显式注入值优先于本地 provider 配置。
 
 ---
 
-## Bridge v2
+## 5. 常用开发命令
 
-Bridge is a FastAPI + asyncio service responsible for raw TCP connectors, PoW,
-upstream generations, local Agent endpoints, and event logs.
-
-### Starting
+### 5.1 本地测试
 
 ```bash
-uv run python -m incypher_bridge serve \
-  --api-host 127.0.0.1 \
-  --api-port <BRIDGE_API_PORT> \
-  --state-dir <BRIDGE_STATE_DIR> \
-  --env-file <ENV_FILE> \
-  --max-handshakes <MAX_HANDSHAKES>
-```
-
-### HTTP API
-
-| Method | Path | Description |
-| --- | --- | --- |
-| GET | `/health` | Health check |
-| POST | `/connectors` | Create a connector |
-| GET | `/connectors` | List connectors |
-| GET | `/connectors/{id}` | Query a connector |
-| GET | `/connectors/{id}/events` | Read events |
-| POST | `/connectors/{id}/reconnect` | Force a new upstream generation |
-| DELETE | `/connectors/{id}` | Stop and delete a connector |
-
-Create a connector:
-
-```bash
-curl -X POST http://127.0.0.1:<BRIDGE_API_PORT>/connectors \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "connector_id": "<CONNECTOR_ID>",
-    "target": "<HOST>:<PORT>",
-    "auto_reconnect": true
-  }'
-```
-
-The `endpoint` in the response is the local TCP address the Agent should connect to.
-
-### Connector lifecycle
-
-- A connector allows only one local Agent connection at a time.
-- The upstream is kept alive after the Agent disconnects.
-- When no Agent is connected, upstream data enters a bounded pending buffer.
-- When the upstream disconnects:
-  - the current Agent receives EOF;
-  - the connector endpoint remains unchanged;
-  - the generation is incremented;
-  - if auto-reconnect is enabled, PoW is performed again automatically.
-- A connector can go through multiple upstream generations.
-
-### Using solver directly
-
-```python
-from solver import connect
-
-s = connect("<HOST>", <PORT>)
-# If team_key is omitted, it is loaded securely from .env.local
-```
-
-Or connect to a local bridge endpoint:
-
-```python
-from solver import connect_bridge
-
-s = connect_bridge(<LOCAL_BRIDGE_PORT>)
-```
-
----
-
-## Agent
-
-Agent is a minimal model-tool loop:
-
-- `bash`
-- `str_replace_editor`
-- `report_flag`
-
-### Sandbox
-
-Bubblewrap is used by default:
-
-- each bash call gets its own PID/UTS/IPC namespace;
-- private `/tmp`;
-- the workspace is mounted read-write at `/workspace`;
-- the project root, `.env.local`, and other worker workspaces are not visible;
-- the shared blackboard is mounted at `/blackboard`;
-- the model API key remains in the host-side AgentLoop.
-
-### Running
-
-Through an endpoint provided by Bridge:
-
-```bash
-uv run python -m incypher_agent run \
-  --run-dir <RUN_DIR> \
-  --agent-endpoint tcp://127.0.0.1:<LOCAL_BRIDGE_PORT> \
-  --description-file <TASK_DESCRIPTION_FILE>
-```
-
-Handle a URL or file task directly:
-
-```bash
-uv run python -m incypher_agent run \
-  --run-dir <RUN_DIR> \
-  --target <TARGET> \
-  --description-file <TASK_DESCRIPTION_FILE>
-```
-
-Real model connectivity check:
-
-```bash
-uv run python -m incypher_agent smoke --env-file <ENV_FILE>
-```
-
-View state:
-
-```bash
-uv run python -m incypher_agent show --run-dir <RUN_DIR>
-```
-
-### Flags and verification
-
-The platform submission format is always:
-
-```text
-INCYPHER{...}
-```
-
-The Agent may report:
-
-```text
-INCYPHER{ad74b76d}
-flag{ad74b76d}
-ad74b76d
-```
-
-The program normalizes it to:
-
-```text
-INCYPHER{ad74b76d}
-```
-
-By default, `report_flag` does not terminate immediately. Instead:
-
-```text
-report_flag
--> candidate.json
--> WAITING_VERIFICATION
--> wait for manual verification.json
-    success -> flag.json, exit 0
-    failed  -> feedback injected into the same context, continue working
-```
-
-If manual verification is not needed, add this to Agent or Scheduler:
-
-```text
---no-wait-verification
-```
-
-In that case, `report_flag` writes `flag.json` and exits 0 immediately.
-
----
-
-## Scheduler
-
-`incypher_scheduler` is a task-blind scheduler:
-
-- it does not analyze the challenge;
-- it maintains worker limits;
-- after a worker exits, it starts a replacement while under the total limit;
-- each scheduler run uses an independent attempt directory;
-- for raw TCP it starts an embedded bridge;
-- for URL/file tasks it does not start a bridge.
-
-### Usage
-
-Raw TCP:
-
-```bash
-uv run python -m incypher_scheduler run \
-  --task-id <TASK_ID> \
-  --target <HOST>:<PORT> \
-  --description-file <TASK_DESCRIPTION_FILE> \
-  --max-concurrent-workers <N_CONCURRENT> \
-  --max-total-workers <N_TOTAL>
-```
-
-URL:
-
-```bash
-uv run python -m incypher_scheduler run \
-  --task-id <TASK_ID> \
-  --target <TARGET_URL> \
-  --description-file <TASK_DESCRIPTION_FILE>
-```
-
-File/directory:
-
-```bash
-uv run python -m incypher_scheduler run \
-  --task-id <TASK_ID> \
-  --target <CHALLENGE_FILES_DIR> \
-  --description-file <TASK_DESCRIPTION_FILE>
-```
-
-### Attempts and Workers
-
-Each run creates:
-
-```text
-.cypher_bridge/scheduler/tasks/<task_id>/attempts/<attempt_id>/workers/wNNNN/
-```
-
-Running the same task_id multiple times does not overwrite old worker directories.
-
-### Manual verification
-
-Manual verification is the default.
-
-List candidates:
-
-```bash
-uv run python -m incypher_scheduler candidates --task-id <TASK_ID>
-```
-
-Report success:
-
-```bash
-uv run python -m incypher_scheduler review \
-  --task-id <TASK_ID> \
-  --run-id <RUN_ID> \
-  --result success
-```
-
-Report failure:
-
-```bash
-uv run python -m incypher_scheduler review \
-  --task-id <TASK_ID> \
-  --run-id <RUN_ID> \
-  --result failed \
-  --feedback "<REVIEW_FEEDBACK>"
-```
-
-When `--attempt-id` is not passed, `review` automatically selects the newest attempt containing that `run_id`.
-It can also be specified explicitly:
-
-```bash
-uv run python -m incypher_scheduler review \
-  --task-id <TASK_ID> \
-  --run-id <RUN_ID> \
-  --attempt-id <ATTEMPT_ID> \
-  --result success
-```
-
-Immediate-exit mode:
-
-```bash
-uv run python -m incypher_scheduler run \
-  --task-id <TASK_ID> \
-  --target <CHALLENGE_FILES_DIR> \
-  --no-wait-verification
-```
-
----
-
-## Blackboard
-
-Task-level directory:
-
-```text
-.cypher_bridge/scheduler/tasks/<task_id>/blackboard/
-└── records/
-```
-
-It is mounted in each worker sandbox at:
-
-```text
-/blackboard
-```
-
-The Agent may pull previous records at any time:
-
-```bash
-bb-read
-ls /blackboard/records
-cat /blackboard/records/*
-```
-
-Record a completed unit of work:
-
-```bash
-printf 'Status: success\nSummary: ...\n' | bb-write
-```
-
-`bb-write` uses a temporary file plus `os.replace` for atomic writes, one record per file.
-
-Prompt rule:
-
-```text
-After a meaningful unit of work concludes, briefly record any outcome
-that may be useful to other agents. Do not log routine intermediate steps.
-```
-
-The Scheduler writes a minimal system record when a worker exits normally or abnormally:
-
-```json
-{
-  "attempt_id": "attempt-...",
-  "worker_id": "w0001",
-  "exit_code": 0,
-  "started_at": "...",
-  "finished_at": "...",
-  "run_dir": "..."
-}
-```
-
----
-
-## Docker deployment
-
-Docker is used to deploy this project's programs; it is not used to turn the Agent workspace into a container.
-
-### Prerequisites
-
-Before `docker run`, choose the preparation steps based on what you want to run:
-
-- Bridge only: either run `docker build -t incypher-agent-stack .` and then `docker run`, or directly run `docker compose up --build`.
-- Scheduler/Agent (an embedded bridge starts inside the container): run `docker build -t incypher-agent-stack .` at least once; Compose is not required.
-- A long-running Bridge service used by other processes via `--bridge-url`, or long-term connector management: run `docker compose up --build`. Compose builds the same image and starts Bridge, with the port restricted to `127.0.0.1:8765`.
-- Before running, first execute `mkdir -p .cypher_bridge` to ensure the directory exists and is writable by the current host user. Also ensure `.env.local` exists and has mode `0600`.
-- In rootless Docker / user namespace remap environments, after container root writes to a bind mount, the host may see `nobody:nogroup` ownership and an `agent/` directory with mode `0700`, making it inaccessible. Adding `--user "$(id -u):$(id -g)"` to the Scheduler/Agent `docker run` makes output files owned by the current host user.
-
-### Build
-
-```bash
-docker build -t incypher-agent-stack .
-```
-
-The image includes:
-
-- Python 3.10
-- FastAPI / asyncio / httpx / openai
-- bubblewrap
-- common CTF tools
-- Bridge, Agent, and Scheduler entrypoints
-
-### Running the Bridge
-
-```bash
-docker run --rm \
-  -p 127.0.0.1:8765:8765 \
-  -v "$PWD/.env.local:/app/.env.local:ro" \
-  -v "$PWD/.cypher_bridge/docker-bridge:/data/bridge" \
-  incypher-agent-stack
-```
-
-### Docker Compose
-
-`compose.yaml` provides a minimal long-running Bridge service:
-
-```bash
-docker compose up --build
-```
-
-Compose is optional. It only solves the port, env, and state volume for a long-running Bridge service;
-Scheduler/Agent need dynamic target arguments and depend on bubblewrap namespace capabilities,
-so running them directly with `docker run` is clearer.
-
-### Running Scheduler/Agent in Docker
-
-Because Scheduler starts bwrap sandbox workers inside the container, extra privileges are usually needed, and using the host UID/GID is recommended.
-
-```bash
-docker run --rm -it \
-  --privileged \
-  --user "$(id -u):$(id -g)" \
-  -v "$PWD/.cypher_bridge:/app/.cypher_bridge" \
-  -v "$PWD/.env.local:/app/.env.local:ro" \
-  -v "<HOST_CHALLENGE_FILES_DIR>:/challenge-files:ro" \
-  -v "<HOST_TASK_DESCRIPTION_FILE>:/description.md:ro" \
-  incypher-agent-stack \
-  incypher-scheduler run \
-    --task-id <TASK_ID> \
-    --target /challenge-files \
-    --description-file /description.md \
-    --env-file /app/.env.local \
-    --max-concurrent-workers <N_CONCURRENT> \
-    --max-total-workers <N_TOTAL> \
-    --no-wait-verification
-```
-
-Notes:
-
-- Replace `<HOST_CHALLENGE_FILES_DIR>` and `<HOST_TASK_DESCRIPTION_FILE>` with absolute host paths. If there is no challenge description file, remove the corresponding `-v` and `--description-file`.
-- In Docker mode, adding `--no-wait-verification` is recommended by default; otherwise the worker waits for `verification.json` inside the container, and cross-container manual review is more cumbersome. If manual verification is needed, remove that flag and write the verification result through `incypher-scheduler review` against the same mounted state directory.
-- If the host allows finer-grained permissions, you can also try:
-
-```text
---security-opt seccomp=unconfined
---cap-add SYS_ADMIN
-```
-
-The exact permissions depend on the host Docker configuration and kernel user namespace settings.
-
----
-
-## Data layout
-
-```text
-.cypher_bridge/
-├── agent-tools/                         # shared read-only Python tool environment
-├── scheduler/
-│   ├── bridge/
-│   │   └── connectors/<connector_id>/
-│   └── tasks/<task_id>/
-│       ├── blackboard/
-│       │   └── records/
-│       └── attempts/
-│           └── <attempt_id>/
-│               └── workers/
-│                   └── w0001/
-│                       ├── worker.log
-│                       └── agent/
-│                           ├── state.json
-│                           ├── events.jsonl
-│                           ├── heartbeat
-│                           ├── candidate.json
-│                           ├── verification.json
-│                           ├── flag.json
-│                           ├── artifacts/
-│                           └── workspace/
-└── ...
-```
-
----
-
-## Security
-
-- `.env.local` must be `0600`.
-- The Bridge HTTP API binds to `127.0.0.1` by default; the Docker default CMD binds to `0.0.0.0`, so keep the port mapping restricted to `127.0.0.1:8765:8765`.
-- The bwrap sandbox does not mount the project root or `.env.local`.
-- The Blackboard stores task-level records only; do not write team keys, API keys, or other secrets into records.
-- Agent bash and artifacts may contain challenge data; do not place private files in the workspace.
-- Running Scheduler/Agent in Docker may require elevated privileges for bwrap; use it only in trusted environments.
-
----
-
-## Tests
-
-```bash
+uv sync
 uv run python -m unittest discover -s tests -v
 ```
 
-Coverage:
+### 5.2 LLM 冒烟
 
-- PoW parsing and solving;
-- Bridge v2 HTTP API, concurrent connectors, upstream reconnect;
-- URL / file / raw TCP targets;
-- attempt / worker lifecycle;
-- Blackboard atomic writes and system records;
-- Agent sandbox, tools, and context limit;
-- model connection error backoff and retry;
-- candidate normalization, manual verification feedback, and same-context recovery.
+```bash
+set -a; . ./.env.local; set +a
+.venv/bin/python -m arena.smoke
+```
 
-For further design details, see:
+### 5.3 只读 API 探测
+
+```bash
+set -a; . ./.env.local; set +a
+.venv/bin/python -m arena.api_probe
+```
+
+### 5.4 单题端到端
+
+```bash
+set -a; . ./.env.local; set +a
+
+.venv/bin/python -m arena.run_once \
+  --challenge-id 90 \
+  --max-steps 1000000 \
+  --max-attempts 3 \
+  --work-root /tmp/arena-once
+```
+
+### 5.5 全局调度器（本地）
+
+```bash
+set -a; . ./.env.local; set +a
+
+.venv/bin/python -m arena.main
+```
+
+常用环境变量：
+
+```dotenv
+ARENA_MODE=practice
+INCLUDE_SOLVED=1
+SUBMIT_FLAGS=0
+ONLY_IDS=17,19,24,90
+CATEGORIES=web,pwn
+MAX_CONCURRENT_CHALLENGES=2
+```
+
+调度策略：
+
+- 从 `list_challenges()` 获取题单；
+- 对每个题再调用 `client.challenge(id)` 加载完整 description / files；
+- 按分值从低到高排序；
+- 静态题先预下载文件；
+- 只要静态和动态题都有剩余，保持 **1 个动态 + 剩余静态** 的并发结构；
+- 动态题全局最多 1 个实例；
+- 每题完成写 `/work/results.json`，包含 `timings`。
+
+---
+
+## 6. 日志与结果
+
+运行时目录：
 
 ```text
-docs/工程说明.md
+/work/
+├── results.json                          # 总结果 + 每题耗时
+└── <challenge_id>/
+    ├── events.jsonl                      # 完整 JSONL 事件日志
+    ├── attempts/
+    │   └── 001/
+    │       └── summary.json              # 触限/出错后的 attempt summary
+    └── ...                               # 下载文件 / 临时文件
 ```
+
+事件类型包括：
+
+```text
+run_start
+model_request
+model_reply
+tool_call
+tool_result
+assistant_plain
+context_limit
+model_error
+run_end
+```
+
+注意：
+
+- `events.jsonl` 可能包含 flag、题目输出、脚本内容；
+- 当前**不做日志脱敏**；
+- 不要把 `events.jsonl` 提交到仓库或共享；
+- 建议本地测试使用独立 Docker volume，运行后导出并删除。
+
+---
+
+## 7. Docker 构建与运行
+
+### 7.1 构建
+
+```bash
+DOCKER_BUILDKIT=0 docker build -t arena-test .
+```
+
+BuildKit 正常时也可用：
+
+```bash
+docker build --platform linux/amd64 --provenance=false -t arena-test .
+```
+
+### 7.2 本地官方沙箱参数运行
+
+```bash
+docker run --rm \
+  --cap-drop=ALL \
+  --security-opt no-new-privileges:true \
+  --read-only \
+  -v "$PWD/arena-work:/work" \
+  --tmpfs /tmp:rw,size=1g \
+  --cpus 8 \
+  --memory 8g \
+  --pids-limit 1024 \
+  --network bridge \
+  --env-file "$PWD/.env.local" \
+  -e ARENA_MODE=practice \
+  -e INCLUDE_SOLVED=1 \
+  -e SUBMIT_FLAGS=0 \
+  -e MAX_CONCURRENT_CHALLENGES=6 \
+  -e MAX_ATTEMPTS=1 \
+  arena-test
+```
+
+正式提交时使用官方 `team-<id>/agent:latest`：
+
+```bash
+echo "$CTF_TOKEN" | docker login registry.in-cypher.com:5001 -u team-<id> --password-stdin
+
+docker tag arena-test:latest \
+  registry.in-cypher.com:5001/team-<id>/agent:latest
+
+docker push registry.in-cypher.com:5001/team-<id>/agent:latest
+```
+
+当前官方 registry 上的 `:latest` 可能是旧 digest；重新 push 前先更新本地镜像。
+
+---
+
+## 8. 已实现的重要行为
+
+- 官方 `ctfd.py` 全量 API 接入；
+- 完整 challenge 加载（description/files）；
+- 静态题文件预加载；
+- 并发调度：`1 dynamic + N static`；
+- 动态实例全局锁与 finally destroy；
+- `max_steps` + `context_window_tokens` 双预算；
+- 失败 attempt 生成 deterministic summary，支持下一 attempt 继承；
+- `SUBMIT_FLAGS=0` 拦截提交并模拟成功；
+- OpenRouter `reasoning.effort=high` + provider deepseek + allow_fallbacks；
+- Bash 策略拦截根目录扫描和读取自身日志；
+- `events.jsonl` 不再每次复制完整 messages 历史。
+
+---
+
+## 9. 已知限制 / TODO
+
+1. `src/` 旧 Bridge/Scheduler/Blackboard 尚未删除。
+2. `compose.yaml` 仍是旧 Bridge 服务，需与旧代码一起清理。
+3. Docker 中 `arena/main.py` 已是入口，但官方 `main.py`/`solver.py`/`brain.py` 快照保留在 `arena/official/` 仅作参考。
+4. 当前没有多模态 `view_image`；DeepSeek V4.1 Flash 支持 text+image，但尚未接入。
+5. `events.jsonl` 可能很大；当前只修掉了完整 messages 重复，尚未做轮转/压缩。
+6. Bash 策略是启发式限制，不是完整 OS 沙箱。
+7. 当前环境 `~/.docker` 可能只读，BuildKit 或 docker login 可能需要 `DOCKER_BUILDKIT=0` 或临时 `DOCKER_CONFIG`。
+8. `already_solved` 不能证明本次 flag 正确；官方 API 对已解 Practice 题会直接返回 already_solved。
+9. 动态题单并发上限为 1，是总耗时瓶颈。
+10. 本地 Docker 容器随本机关机会停止；真正远端长跑需在远端主机执行或使用远端 Docker context。
+
+---
+
+## 10. 接手建议
+
+优先阅读：
+
+1. `docs/工程说明.md`
+2. `arena/official/CONTRACT.md`
+3. `arena/main.py`
+4. `arena/solver.py`
+5. `arena/runtime/loop.py`
+6. `arena/runtime/model.py`
+7. `arena/runtime/tools.py`
+8. `arena/official/ctfd.py`
+
+下一步建议顺序：
+
+1. 用 `SUBMIT_FLAGS=0` 重跑完整 Practice，确认完整题面加载后 context/步骤明显下降；
+2. 删除旧 `src/`、`compose.yaml` 和旧测试；
+3. 决定是否实现 `view_image` 多模态工具；
+4. 为 `events.jsonl` 增加轮转/压缩；
+5. 重新 push 最新镜像到官方 registry。
