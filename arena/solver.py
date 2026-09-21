@@ -115,6 +115,7 @@ def solve_challenge(
     *,
     brain_factory: Callable[..., Any] = Brain,
     work_root: Path = DEFAULT_WORK_ROOT,
+    events_path: Path | None = None,
 ) -> dict[str, Any]:
     cid = int(ch["id"])
     cdir = Path(work_root) / str(cid)
@@ -130,11 +131,13 @@ def solve_challenge(
             connection = boot_dynamic(client, cid)
         prompt = build_prompt(ch, cdir=cdir, filenames=filenames, connection=connection)
         run_bash = make_run_bash(cdir)
+        event_file = events_path if events_path is not None else cdir / "events.jsonl"
         brain = brain_factory(
             run_bash=run_bash,
             submit_flag=lambda flag: client.submit(cid, flag),
             max_steps=max_steps,
             workspace_dir=str(cdir),
+            events_path=str(event_file),
         )
         result = dict(brain.solve(prompt))
     except Exception as exc:  # noqa: BLE001 - one challenge must not kill the scheduler

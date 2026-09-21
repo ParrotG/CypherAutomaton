@@ -99,6 +99,57 @@ class ArenaBrainTests(unittest.TestCase):
         self.assertFalse(result["solved"])
         self.assertEqual(result["steps"], 2)
 
+    def test_context_limit_stops_before_next_model_call(self) -> None:
+        model = ScriptedModel(
+            [
+                ModelReply(
+                    message={"role": "assistant", "content": "thinking"},
+                    prompt_tokens=5950,
+                )
+            ]
+        )
+        with patch.dict(
+            os.environ,
+            {"CONTEXT_WINDOW_TOKENS": "6000", "CONTEXT_RESERVE_TOKENS": "100"},
+            clear=False,
+        ):
+            brain = Brain(
+                run_bash=lambda _cmd: "",
+                submit_flag=lambda _flag: {},
+                max_steps=100,
+                model=model,
+            )
+            result = brain.solve("solve this")
+        self.assertFalse(result["solved"])
+        self.assertEqual(result["error"], "context_limit")
+
+    def test_events_jsonl_is_written(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            events = Path(temp) / "events.jsonl"
+            model = ScriptedModel(
+                [tool_reply("c1", "submit_flag", {"flag": "INCYPHER{ok}"})]
+            )
+            brain = Brain(
+                run_bash=lambda _cmd: "",
+                submit_flag=lambda _flag: {"status": "correct"},
+                max_steps=3,
+                model=model,
+                events_path=str(events),
+            )
+            result = brain.solve("solve this")
+            lines = [json.loads(line) for line in events.read_text().splitlines() if line.strip()]
+        self.assertTrue(result["solved"])
+        kinds = [line["kind"] for line in lines]
+        for expected in (
+            "run_start",
+            "model_request",
+            "model_reply",
+            "tool_call",
+            "tool_result",
+            "run_end",
+        ):
+            self.assertIn(expected, kinds)
+
     def test_editor_escape_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             executor = ToolExecutor(

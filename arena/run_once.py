@@ -26,7 +26,7 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="arena-run-once")
     parser.add_argument("--challenge-id", type=int, required=True)
-    parser.add_argument("--max-steps", type=int, default=int(os.environ.get("MAX_STEPS", "40")))
+    parser.add_argument("--max-steps", type=int, default=int(os.environ.get("MAX_STEPS", "1000000")))
     parser.add_argument(
         "--work-root",
         default=os.environ.get("ARENA_WORK_ROOT", "/work"),
@@ -41,7 +41,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     work_root = Path(args.work_root).expanduser().resolve()
-    result = solve_challenge(client, ch, max_steps=args.max_steps, work_root=work_root)
+    result = solve_challenge(
+        client,
+        ch,
+        max_steps=args.max_steps,
+        work_root=work_root,
+        events_path=work_root / str(args.challenge_id) / "events.jsonl",
+    )
     out = Path(args.out).expanduser().resolve() if args.out else work_root / f"result-{args.challenge_id}.json"
     _write_json(out, result)
 
@@ -54,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         "seconds": result.get("seconds"),
         "error": result.get("error"),
         "out": str(out),
+        "events": str(work_root / str(args.challenge_id) / "events.jsonl"),
     }
     print(json.dumps(summary, ensure_ascii=False))
     return 0 if result.get("solved") else 10

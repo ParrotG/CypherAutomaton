@@ -1,39 +1,14 @@
-FROM python:3.10-slim-bookworm
+FROM registry.in-cypher.com:5001/base/agent-base:latest
 
-ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+ENV PYTHONPATH=/opt/agent \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        bash \
-        binutils \
-        bubblewrap \
-        build-essential \
-        ca-certificates \
-        curl \
-        file \
-        gawk \
-        gdb \
-        git \
-        libc6-dbg \
-        netcat-openbsd \
-        patchelf \
-        procps \
-        socat \
-        unzip \
-        wget \
-        xxd \
-        zip \
-    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir "openai>=1.0,<2"
 
-WORKDIR /app
+# Official base already provides /opt/agent/ctfd.py and the toolchain.
+COPY arena /opt/agent/arena
 
-COPY pyproject.toml README.md uv.lock /app/
-COPY src /app/src
-
-RUN pip install --no-cache-dir .
-
-RUN mkdir -p /data /app/.cypher_bridge
-
-EXPOSE 8765
-
-CMD ["incypher-bridge", "serve", "--api-host", "0.0.0.0", "--api-port", "8765", "--state-dir", "/data/bridge", "--env-file", "/app/.env.local"]
+WORKDIR /opt/agent
+ENTRYPOINT ["python", "-m", "arena.main"]
