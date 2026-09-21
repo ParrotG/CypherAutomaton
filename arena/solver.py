@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -14,6 +15,17 @@ from .runtime.summary import build_attempt_summary
 
 DEFAULT_WORK_ROOT = Path("/work")
 BASH_TIMEOUT = 120.0
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def prepare_files(client: CTFdClient, ch: dict[str, Any], cdir: Path) -> list[str]:
@@ -137,6 +149,8 @@ def solve_challenge(
     final_result: dict[str, Any] = {"solved": False, "error": "not_started"}
     attempts: list[dict[str, Any]] = []
     attempts_made = 0
+    started_at = _utc_now()
+    submit_flags = _env_bool("SUBMIT_FLAGS", True)
     if max_attempts is None:
         max_attempts = int(os.environ.get("MAX_ATTEMPTS", "3"))
     max_attempts = max(1, int(max_attempts))
@@ -147,6 +161,11 @@ def solve_challenge(
             connection = boot_dynamic(client, cid)
         run_bash = make_run_bash(cdir)
         event_file = events_path if events_path is not None else cdir / "events.jsonl"
+
+        def submit_flag(flag: str) -> dict[str, Any]:
+            if submit_flags:
+                return client.submit(cid, flag)
+            return {"status": "correct", "submission_disabled": True}
 
         for attempt in range(1, max_attempts + 1):
             attempts_made += 1
@@ -160,7 +179,7 @@ def solve_challenge(
             )
             brain = brain_factory(
                 run_bash=run_bash,
-                submit_flag=lambda flag: client.submit(cid, flag),
+                submit_flag=submit_flag,
                 max_steps=max_steps,
                 workspace_dir=str(cdir),
                 events_path=str(event_file),
@@ -198,6 +217,7 @@ def solve_challenge(
             destroy_dynamic(client, cid)
 
     seconds = round(time.perf_counter() - started, 1)
+    finished_at = _utc_now()
     return {
         "id": cid,
         "name": ch.get("name"),
@@ -207,6 +227,9 @@ def solve_challenge(
         "had_files": bool(filenames),
         "had_instance": bool(connection),
         "seconds": seconds,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "submit_flags": submit_flags,
         "attempt_count": attempts_made or 1,
         "attempts": attempts,
         **final_result,

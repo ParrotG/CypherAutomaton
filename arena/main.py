@@ -30,6 +30,16 @@ def _split_env(name: str, cast=str) -> list[Any]:
     return [cast(part) for part in raw.replace(",", " ").split() if part]
 
 
+def _timing_row(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": result.get("id"),
+        "name": result.get("name"),
+        "started_at": result.get("started_at"),
+        "finished_at": result.get("finished_at"),
+        "seconds": result.get("seconds"),
+    }
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -102,10 +112,12 @@ def main() -> int:
         results.append(result)
         payload = {
             "mode": mode,
+            "submit_flags": _env_bool("SUBMIT_FLAGS", True),
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "attempted": len(results),
             "solved": sum(1 for row in results if row.get("solved")),
             "results": results,
+            "timings": [_timing_row(row) for row in results],
         }
         _write_json(results_path, payload)
         print(
@@ -117,6 +129,8 @@ def main() -> int:
                     "solved": result.get("solved"),
                     "steps": result.get("steps"),
                     "seconds": result.get("seconds"),
+                    "started_at": result.get("started_at"),
+                    "finished_at": result.get("finished_at"),
                     "error": result.get("error"),
                 },
                 ensure_ascii=False,
@@ -127,10 +141,12 @@ def main() -> int:
     total = round(time.perf_counter() - started, 1)
     payload = {
         "mode": mode,
+        "submit_flags": _env_bool("SUBMIT_FLAGS", True),
         "total_seconds": total,
         "attempted": len(results),
         "solved": sum(1 for row in results if row.get("solved")),
         "results": results,
+        "timings": [_timing_row(row) for row in results],
     }
     _write_json(results_path, payload)
     print(

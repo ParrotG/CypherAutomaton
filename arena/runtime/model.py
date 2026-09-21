@@ -25,7 +25,10 @@ from openai import (
     RateLimitError,
 )
 
-DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEFAULT_DEEPSEEK_MODEL = "deepseek-flash"
+DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_OPENROUTER_MODEL = "deepseek/deepseek-v4.1-flash"
 
 
 class ModelConfigError(RuntimeError):
@@ -80,14 +83,16 @@ class ModelClient:
         if extra_headers:
             headers.update(extra_headers)
 
+        self.base_url = base_url.rstrip("/")
         self.client = OpenAI(
             api_key=api_key.strip(),
-            base_url=base_url.rstrip("/"),
+            base_url=self.base_url,
             timeout=timeout,
             max_retries=0,
             default_headers=headers or None,
         )
         self.model = model.strip()
+        self.provider = "custom"
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.max_retries = max(1, int(max_retries))
@@ -96,10 +101,39 @@ class ModelClient:
 
     @classmethod
     def from_env(cls) -> "ModelClient":
-        api_key = os.environ.get("LLM_API_KEY", "").strip()
-        base_url = os.environ.get("LLM_BASE_URL", DEFAULT_BASE_URL).strip()
-        model = os.environ.get("LLM_MODEL", "").strip()
-        return cls(api_key=api_key, base_url=base_url, model=model)
+        explicit_key = os.environ.get("LLM_API_KEY", "").strip()
+        explicit_base = os.environ.get("LLM_BASE_URL", "").strip()
+        explicit_model = os.environ.get("LLM_MODEL", "").strip()
+        provider = (os.environ.get("LLM_PROVIDER", "deepseek").strip().lower() or "deepseek")
+        if provider == "openrouter":
+            key = explicit_key or os.environ.get("OPENROUTER_API_KEY", "").strip()
+            base_url = (
+                explicit_base
+                or os.environ.get("OPENROUTER_BASE_URL", "").strip()
+                or DEFAULT_OPENROUTER_BASE_URL
+            )
+            model = (
+                explicit_model
+                or os.environ.get("OPENROUTER_MODEL", "").strip()
+                or DEFAULT_OPENROUTER_MODEL
+            )
+        elif provider == "deepseek":
+            key = explicit_key or os.environ.get("DEEPSEEK_API_KEY", "").strip()
+            base_url = (
+                explicit_base
+                or os.environ.get("DEEPSEEK_BASE_URL", "").strip()
+                or DEFAULT_DEEPSEEK_BASE_URL
+            )
+            model = (
+                explicit_model
+                or os.environ.get("DEEPSEEK_MODEL", "").strip()
+                or DEFAULT_DEEPSEEK_MODEL
+            )
+        else:
+            raise ModelConfigError("LLM_PROVIDER must be deepseek or openrouter")
+        client = cls(api_key=key, base_url=base_url, model=model)
+        client.provider = provider
+        return client
 
     def chat(
         self,

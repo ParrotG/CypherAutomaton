@@ -173,6 +173,35 @@ class ArenaBrainTests(unittest.TestCase):
 
 
 class ArenaModelTests(unittest.TestCase):
+
+    def test_provider_defaults_openrouter(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_PROVIDER": "openrouter",
+                "OPENROUTER_API_KEY": "test-key",
+            },
+            clear=True,
+        ):
+            client = ModelClient.from_env()
+        self.assertEqual(client.provider, "openrouter")
+        self.assertEqual(client.base_url, "https://openrouter.ai/api/v1")
+        self.assertEqual(client.model, "deepseek/deepseek-v4.1-flash")
+
+    def test_provider_defaults_deepseek(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_PROVIDER": "deepseek",
+                "DEEPSEEK_API_KEY": "test-key",
+            },
+            clear=True,
+        ):
+            client = ModelClient.from_env()
+        self.assertEqual(client.provider, "deepseek")
+        self.assertEqual(client.base_url, "https://api.deepseek.com")
+        self.assertEqual(client.model, "deepseek-flash")
+
     def test_from_env_requires_key(self) -> None:
         with patch.dict(os.environ, {"LLM_MODEL": "some-model"}, clear=False):
             os.environ.pop("LLM_API_KEY", None)

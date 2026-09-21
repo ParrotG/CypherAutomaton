@@ -45,8 +45,9 @@ def main(argv: list[str] | None = None) -> int:
     content = str(reply.message.get("content") or "").strip()
     result = {
         "ok": True,
-        "base_url": os.environ.get("LLM_BASE_URL", ""),
-        "model": os.environ.get("LLM_MODEL", ""),
+        "provider": getattr(client, "provider", "custom"),
+        "base_url": getattr(client, "base_url", os.environ.get("LLM_BASE_URL", "")),
+        "model": getattr(client, "model", os.environ.get("LLM_MODEL", "")),
         "reply": content[:200],
         "total_tokens": reply.total_tokens,
     }

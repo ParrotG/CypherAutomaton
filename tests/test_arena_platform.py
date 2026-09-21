@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from arena.platform import is_practice, select_targets
 from arena.solver import build_prompt, prepare_files, solve_challenge
@@ -60,6 +62,19 @@ class RetryBrain:
         return {"solved": True, "steps": 1, "flag": "INCYPHER{retry}"}
 
 
+class SubmitBrain:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+    def solve(self, prompt: str) -> dict:
+        verdict = self.kwargs["submit_flag"]("INCYPHER{test}")
+        return {
+            "solved": verdict.get("status") == "correct",
+            "steps": 1,
+            "verdict": verdict,
+        }
+
+
 class ArenaPlatformTests(unittest.TestCase):
     def test_practice_detection(self) -> None:
         self.assertTrue(is_practice({"category": "(Practice) web"}))
@@ -79,6 +94,33 @@ class ArenaPlatformTests(unittest.TestCase):
         only = select_targets(rows, mode="competition", only_ids=[1, 2], include_solved=True)
         self.assertEqual([row["id"] for row in only], [2, 1])
 
+
+
+    def test_disabled_submit_flags_are_intercepted(self) -> None:
+        client = FakeClient()
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"SUBMIT_FLAGS": "0"}, clear=False
+        ):
+            result = solve_challenge(
+                client,
+                {
+                    "id": 99,
+                    "name": "Test",
+                    "category": "web",
+                    "points": 100,
+                    "type": "standard",
+                    "description": "test",
+                    "files": [],
+                },
+                max_steps=3,
+                max_attempts=1,
+                brain_factory=SubmitBrain,
+                work_root=Path(temp),
+            )
+        self.assertTrue(result["solved"])
+        self.assertFalse(result["submit_flags"])
+        self.assertEqual(client.submitted, [])
+        self.assertTrue(result["verdict"]["submission_disabled"])
 
     def test_solve_challenge_retries_with_summary(self) -> None:
         RetryBrain.instances = []
