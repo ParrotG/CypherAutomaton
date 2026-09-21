@@ -176,6 +176,57 @@ class ArenaBrainTests(unittest.TestCase):
         self.assertEqual(outcome.flag, "INCYPHER{abc123}")
 
 
+
+    def test_explicit_max_steps_wins_over_env(self) -> None:
+        with patch.dict(os.environ, {"MAX_STEPS": "7"}, clear=False):
+            brain = Brain(
+                run_bash=lambda _cmd: "",
+                submit_flag=lambda _flag: {},
+                max_steps=123,
+            )
+        self.assertEqual(brain.max_steps, 123)
+
+    def test_token_budget_stops_attempt(self) -> None:
+        model = ScriptedModel(
+            [
+                ModelReply(
+                    message={"role": "assistant", "content": "thinking"},
+                    total_tokens=100,
+                )
+            ]
+        )
+        with patch.dict(
+            os.environ,
+            {"MAX_ATTEMPT_TOKENS": "50", "MAX_PLAIN_REPLIES": "99"},
+            clear=False,
+        ):
+            brain = Brain(
+                run_bash=lambda _cmd: "",
+                submit_flag=lambda _flag: {},
+                max_steps=10,
+                model=model,
+            )
+            result = brain.solve("solve this")
+        self.assertFalse(result["solved"])
+        self.assertEqual(result["error"], "token_budget_exhausted")
+
+    def test_no_tool_progress_stops_plain_streak(self) -> None:
+        model = ScriptedModel([plain_reply("a"), plain_reply("b")])
+        with patch.dict(
+            os.environ,
+            {"MAX_PLAIN_REPLIES": "2", "MAX_ATTEMPT_TOKENS": "1000000"},
+            clear=False,
+        ):
+            brain = Brain(
+                run_bash=lambda _cmd: "",
+                submit_flag=lambda _flag: {},
+                max_steps=10,
+                model=model,
+            )
+            result = brain.solve("solve this")
+        self.assertFalse(result["solved"])
+        self.assertEqual(result["error"], "no_tool_progress")
+
 class ArenaModelTests(unittest.TestCase):
 
     def test_provider_defaults_openrouter(self) -> None:

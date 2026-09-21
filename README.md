@@ -146,10 +146,16 @@ OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 OPENROUTER_MODEL=deepseek/deepseek-v4.1-flash
 
 # Loop / context
+# MAX_STEPS 仅作为不可达保险丝；实际由 token/context 预算控制
 MAX_STEPS=1000000
 MAX_ATTEMPTS=3
 CONTEXT_WINDOW_TOKENS=1000000
 CONTEXT_RESERVE_TOKENS=8000
+MAX_ATTEMPT_TOKENS=1000000
+MAX_PLAIN_REPLIES=3
+
+# 动态实例后台续期间隔（秒）
+RENEW_INTERVAL_SECONDS=60
 
 # flag 提交开关：0 = 拦截并模拟成功，1 = 真实提交
 SUBMIT_FLAGS=1
@@ -167,7 +173,9 @@ PRELOAD_WORKERS=2
   "reasoning": {"effort": "high"},
   "provider": {"order": ["deepseek"], "allow_fallbacks": true}
   ```
-- 官方 arena 运行时注入 `CTF_TOKEN` / `CTF_BASE` / `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`；显式注入值优先于本地 provider 配置。
+- `ARENA_MODE` 未设置时默认 `auto`：题单里存在非 Practice 题则跑 competition，只有 Practice 题则跑 practice；也可显式设置 `practice` / `competition` 覆盖。
+- Day 1 arena **不会注入 `LLM_*`**，因此镜像必须通过 Dockerfile 构建参数内置自己的 Day 1 LLM 配置；Day 2 arena 注入的 `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` 会在运行时覆盖镜像内置值。
+- 官方 arena 始终注入 `CTF_TOKEN` / `CTF_BASE`。
 
 ---
 
@@ -280,13 +288,19 @@ run_end
 ### 7.1 构建
 
 ```bash
-DOCKER_BUILDKIT=0 docker build -t arena-test .
+DOCKER_BUILDKIT=0 docker build -t arena-test \
+  --build-arg DAY1_LLM_API_KEY="$OPENROUTER_API_KEY" \
+  --build-arg DAY1_LLM_BASE_URL="$OPENROUTER_BASE_URL" \
+  --build-arg DAY1_LLM_MODEL="$OPENROUTER_MODEL" .
 ```
 
 BuildKit 正常时也可用：
 
 ```bash
-docker build --platform linux/amd64 --provenance=false -t arena-test .
+docker build --platform linux/amd64 --provenance=false -t arena-test \
+  --build-arg DAY1_LLM_API_KEY="$OPENROUTER_API_KEY" \
+  --build-arg DAY1_LLM_BASE_URL="$OPENROUTER_BASE_URL" \
+  --build-arg DAY1_LLM_MODEL="$OPENROUTER_MODEL" .
 ```
 
 ### 7.2 本地官方沙箱参数运行
@@ -303,7 +317,7 @@ docker run --rm \
   --pids-limit 1024 \
   --network bridge \
   --env-file "$PWD/.env.local" \
-  -e ARENA_MODE=practice \
+  -e ARENA_MODE=auto \
   -e INCLUDE_SOLVED=1 \
   -e SUBMIT_FLAGS=0 \
   -e MAX_CONCURRENT_CHALLENGES=6 \
@@ -332,7 +346,10 @@ docker push registry.in-cypher.com:5001/team-<id>/agent:latest
 - 完整 challenge 加载（description/files）；
 - 静态题文件预加载；
 - 并发调度：`1 dynamic + N static`；
-- 动态实例全局锁与 finally destroy；
+- 动态实例全局锁与 finally destroy，并在 attempt 运行期间后台 `renew`；
+- 平台 API 瞬时错误自动重试；
+- 累计 token 预算 + 连续无 tool call 保险丝；
+- `ARENA_MODE=auto` 自动区分 Day 1 practice / Day 2 competition；
 - `max_steps` + `context_window_tokens` 双预算；
 - 失败 attempt 生成 deterministic summary，支持下一 attempt 继承；
 - `SUBMIT_FLAGS=0` 拦截提交并模拟成功；

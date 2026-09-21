@@ -69,6 +69,31 @@ class ArenaMainTests(unittest.TestCase):
             self.assertEqual(Path(calls[0][4]), Path(temp) / "90" / "events.jsonl")
             self.assertEqual(calls[0][5], [])
 
+    def test_main_auto_mode_selects_practice_when_only_practice_exists(self) -> None:
+        challenges = [
+            {"id": 90, "name": "P", "category": "(Practice) web", "points": 100, "type": "standard"},
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            calls = []
+
+            def fake_solve(client, ch, *, max_steps, max_attempts, work_root, events_path, prepared_filenames):
+                calls.append(ch["id"])
+                return {"id": ch["id"], "name": ch["name"], "solved": True, "steps": 1, "seconds": 0.1}
+
+            env = {
+                "ARENA_MODE": "auto",
+                "WORK_ROOT": temp,
+                "RESULTS_PATH": str(Path(temp) / "results.json"),
+            }
+            with patch.dict(os.environ, env, clear=False), patch(
+                "arena.main.connect_from_env", return_value=FakeClient(challenges)
+            ), patch("arena.main.prepare_files", return_value=[]), patch(
+                "arena.main.solve_challenge", side_effect=fake_solve
+            ):
+                code = arena_main.main()
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [90])
+
     def test_static_challenges_run_concurrently(self) -> None:
         challenges = [
             {"id": 1, "name": "A", "category": "web", "points": 100, "type": "standard"},

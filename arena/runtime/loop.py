@@ -56,6 +56,8 @@ class AgentRuntime:
         max_steps: int = 40,
         context_window_tokens: int = 1_000_000,
         context_reserve_tokens: int = 8_000,
+        max_total_tokens: int | None = None,
+        max_plain_replies: int = 3,
         events: EventLogger | None = None,
     ) -> None:
         self.model = model
@@ -66,6 +68,11 @@ class AgentRuntime:
         self.context_limit_tokens = max(
             1, self.context_window_tokens - self.context_reserve_tokens
         )
+        if max_total_tokens is None or int(max_total_tokens) <= 0:
+            self.max_total_tokens = self.context_window_tokens
+        else:
+            self.max_total_tokens = max(1, int(max_total_tokens))
+        self.max_plain_replies = max(1, int(max_plain_replies))
         self.events = events or EventLogger(None)
 
     def _log(self, kind: str, **payload: Any) -> None:
@@ -97,9 +104,13 @@ class AgentRuntime:
             context_window_tokens=self.context_window_tokens,
             context_reserve_tokens=self.context_reserve_tokens,
             context_limit_tokens=self.context_limit_tokens,
+            max_total_tokens=self.max_total_tokens,
+            max_plain_replies=self.max_plain_replies,
         )
         baseline_prompt_tokens: int | None = None
         baseline_message_count = 0
+        cumulative_tokens = 0
+        plain_reply_streak = 0
 
         for step in range(1, self.max_steps + 1):
             estimated_prompt_tokens = self._estimate_next_prompt_tokens(
@@ -153,6 +164,10 @@ class AgentRuntime:
 
             assistant = reply.message
             tool_calls = assistant.get("tool_calls") or []
+            usage_tokens = int(reply.total_tokens or 0)
+            if usage_tokens <= 0:
+                usage_tokens = int(reply.prompt_tokens or 0) + int(reply.completion_tokens or 0)
+            cumulative_tokens += max(0, usage_tokens)
             self._log(
                 "model_reply",
                 step=step,
@@ -167,14 +182,39 @@ class AgentRuntime:
                     "raw": reply.raw_usage,
                 },
                 estimated_prompt_tokens=estimated_prompt_tokens,
+                cumulative_tokens=cumulative_tokens,
             )
             messages.append(assistant)
 
             if not tool_calls:
+                plain_reply_streak += 1
                 self._log("assistant_plain", step=step, content=assistant.get("content"))
+                if cumulative_tokens >= self.max_total_tokens:
+                    result = {
+                        "solved": False,
+                        "steps": step,
+                        "error": "token_budget_exhausted",
+                        "cumulative_tokens": cumulative_tokens,
+                        "max_total_tokens": self.max_total_tokens,
+                    }
+                    self._log("token_budget_exhausted", **result)
+                    self._log("run_end", result=result)
+                    return result
+                if plain_reply_streak >= self.max_plain_replies:
+                    result = {
+                        "solved": False,
+                        "steps": step,
+                        "error": "no_tool_progress",
+                        "plain_reply_streak": plain_reply_streak,
+                        "cumulative_tokens": cumulative_tokens,
+                    }
+                    self._log("no_tool_progress", **result)
+                    self._log("run_end", result=result)
+                    return result
                 messages.append(dict(CONTINUATION))
                 continue
 
+            plain_reply_streak = 0
             for call in tool_calls:
                 function = call.get("function") or {}
                 name = str(function.get("name") or "")
@@ -214,6 +254,18 @@ class AgentRuntime:
                     }
                     self._log("run_end", result=result)
                     return result
+
+            if cumulative_tokens >= self.max_total_tokens:
+                result = {
+                    "solved": False,
+                    "steps": step,
+                    "error": "token_budget_exhausted",
+                    "cumulative_tokens": cumulative_tokens,
+                    "max_total_tokens": self.max_total_tokens,
+                }
+                self._log("token_budget_exhausted", **result)
+                self._log("run_end", result=result)
+                return result
 
         result = {
             "solved": False,

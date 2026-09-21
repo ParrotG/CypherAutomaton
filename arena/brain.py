@@ -16,7 +16,7 @@ class Brain:
         self,
         run_bash: Callable[[str], str],
         submit_flag: Callable[[str], dict[str, Any]],
-        max_steps: int = 40,
+        max_steps: int | None = None,
         *,
         model: Any | None = None,
         workspace_dir: str | None = None,
@@ -25,7 +25,9 @@ class Brain:
     ) -> None:
         self.run_bash = run_bash
         self.submit_flag = submit_flag
-        self.max_steps = int(os.environ.get("MAX_STEPS", max_steps))
+        if max_steps is None:
+            max_steps = int(os.environ.get("MAX_STEPS", "40"))
+        self.max_steps = int(max_steps)
         self.model = model
         self.workspace_dir = workspace_dir
         self.events_path = events_path
@@ -36,6 +38,11 @@ class Brain:
         self.context_reserve_tokens = int(
             os.environ.get("CONTEXT_RESERVE_TOKENS", "8000")
         )
+        max_total_raw = os.environ.get("MAX_ATTEMPT_TOKENS", "")
+        self.max_total_tokens = int(max_total_raw) if max_total_raw.strip() else self.context_window_tokens
+        if self.max_total_tokens <= 0:
+            self.max_total_tokens = self.context_window_tokens
+        self.max_plain_replies = int(os.environ.get("MAX_PLAIN_REPLIES", "3"))
 
     def solve(self, prompt: str) -> dict[str, Any]:
         model = self.model or ModelClient.from_env()
@@ -53,6 +60,8 @@ class Brain:
                 max_steps=self.max_steps,
                 context_window_tokens=self.context_window_tokens,
                 context_reserve_tokens=self.context_reserve_tokens,
+                max_total_tokens=self.max_total_tokens,
+                max_plain_replies=self.max_plain_replies,
                 events=events,
             ).run(prompt)
         finally:

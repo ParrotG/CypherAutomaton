@@ -22,8 +22,8 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from .platform import connect_from_env, mode_from_env, select_targets
-from .solver import prepare_files, solve_challenge
+from .platform import connect_from_env, mode_from_env, resolve_mode, select_targets
+from .solver import default_work_root, prepare_files, solve_challenge
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -122,8 +122,8 @@ def _run_challenge(
 
 def main() -> int:
     client = connect_from_env()
-    mode = mode_from_env()
-    work_root = Path(os.environ.get("WORK_ROOT", "/work")).expanduser().resolve()
+    requested_mode = mode_from_env()
+    work_root = default_work_root()
     results_path = Path(
         os.environ.get("RESULTS_PATH", str(work_root / "results.json"))
     ).expanduser().resolve()
@@ -134,11 +134,13 @@ def main() -> int:
     only_ids = _split_env("ONLY_IDS", int)
     categories = _split_env("CATEGORIES", str)
 
+    all_challenges = list(client.list_challenges())
+    mode = resolve_mode(all_challenges, requested_mode)
     me = client.me()
     solved_ids = {int(cid) for cid in (me.get("solved") or [])}
     include_solved = _env_bool("INCLUDE_SOLVED", default=(mode == "practice"))
     briefs = select_targets(
-        client.list_challenges(),
+        all_challenges,
         mode=mode,
         solved_ids=solved_ids,
         include_solved=include_solved,

@@ -3,13 +3,75 @@
 from __future__ import annotations
 
 import os
+import random
+import time
 from typing import Any, Iterable
+from urllib.error import HTTPError
 
 from .official.ctfd import CTFdClient
 
 
 class PlatformConfigError(RuntimeError):
     """Raised when official CTF_* environment variables are missing."""
+
+
+class RetryingCTFdClient(CTFdClient):
+    """Official client with bounded retries for transient platform failures.
+
+    The official snapshot under ``arena/official`` remains untouched.  This
+    wrapper only retries transport errors, HTTP 429, and HTTP 5xx; 4xx errors
+    are returned immediately because they usually indicate auth/request bugs.
+    """
+
+    def __init__(
+        self,
+        base: str,
+        token: str,
+        *,
+        max_attempts: int = 3,
+        retry_base: float = 0.5,
+        retry_max_wait: float = 5.0,
+    ) -> None:
+        super().__init__(base, token)
+        self.max_attempts = max(1, int(max_attempts))
+        self.retry_base = max(0.05, float(retry_base))
+        self.retry_max_wait = max(self.retry_base, float(retry_max_wait))
+
+    def _retry_wait(self, attempt: int) -> float:
+        base = min(self.retry_max_wait, self.retry_base * (2 ** max(0, attempt - 1)))
+        return base * random.uniform(0.5, 1.5)
+
+    def _call(self, method, path, body=None):
+        last_code = -1
+        last_payload: dict[str, Any] = {"ok": False, "error": "no attempt", "data": None}
+        for attempt in range(1, self.max_attempts + 1):
+            code, payload = super()._call(method, path, body)
+            last_code, last_payload = code, payload
+            retryable = code == -1 or code == 429 or code >= 500
+            if not retryable or attempt >= self.max_attempts:
+                return code, payload
+            time.sleep(self._retry_wait(attempt))
+        return last_code, last_payload
+
+    def download(self, url: str, dest: str):
+        last_error: Exception | None = None
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                return super().download(url, dest)
+            except HTTPError as exc:
+                # Do not retry ordinary client errors (404/403/...).  429 is
+                # treated as transient by the platform.
+                if 400 <= exc.code < 500 and exc.code != 429:
+                    raise
+                last_error = exc
+            except Exception as exc:  # network/DNS/timeout etc.
+                last_error = exc
+            if attempt >= self.max_attempts:
+                break
+            time.sleep(self._retry_wait(attempt))
+        if last_error is not None:
+            raise last_error
+        return None
 
 
 def connect_from_env() -> CTFdClient:
@@ -19,7 +81,7 @@ def connect_from_env() -> CTFdClient:
         raise PlatformConfigError("CTF_BASE or CTFD_URL is required")
     if not token:
         raise PlatformConfigError("CTF_TOKEN or CTFD_TOKEN is required")
-    return CTFdClient(base, token)
+    return RetryingCTFdClient(base, token)
 
 
 def is_practice(ch: dict[str, Any]) -> bool:
@@ -27,10 +89,40 @@ def is_practice(ch: dict[str, Any]) -> bool:
 
 
 def mode_from_env() -> str:
-    mode = os.environ.get("ARENA_MODE", "competition").strip().lower()
-    if mode not in ("practice", "competition"):
-        raise PlatformConfigError("ARENA_MODE must be practice or competition")
+    """Return the requested target mode.
+
+    ``auto`` is the default so the same image can run Day 1 (practice set only)
+    and Day 2 (competition set present) without runtime arguments.
+    """
+    mode = os.environ.get("ARENA_MODE", "auto").strip().lower()
+    if mode not in ("auto", "practice", "competition"):
+        raise PlatformConfigError("ARENA_MODE must be auto, practice or competition")
     return mode
+
+
+def resolve_mode(
+    challenges: Iterable[dict[str, Any]],
+    requested: str | None = None,
+) -> str:
+    """Resolve ``auto`` to practice/competition from the live challenge list.
+
+    Competition challenges win when both sets are visible.  If only practice
+    challenges exist, as on Day 1, fall back to practice.
+    """
+    mode = requested or mode_from_env()
+    if mode in ("practice", "competition"):
+        return mode
+    if mode != "auto":
+        raise PlatformConfigError(f"unsupported mode: {mode}")
+
+    rows = list(challenges)
+    if any(not is_practice(ch) for ch in rows):
+        return "competition"
+    if rows:
+        return "practice"
+    # No challenges at all: preserve the old competition default so an empty
+    # run still exits cleanly and writes results.json.
+    return "competition"
 
 
 def select_targets(
@@ -69,4 +161,3 @@ def select_targets(
         rows.append(dict(ch))
     rows.sort(key=lambda item: (int(item.get("points") or 0), int(item["id"])))
     return rows
-

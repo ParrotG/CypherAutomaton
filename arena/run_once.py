@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .platform import connect_from_env
-from .solver import solve_challenge
+from .solver import default_work_root, solve_challenge
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -34,7 +34,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--work-root",
-        default=os.environ.get("ARENA_WORK_ROOT", "/work"),
+        default=None,
+        help="Work root (default: $WORK_ROOT/$ARENA_WORK_ROOT, else /work or a temp fallback)",
     )
     parser.add_argument("--out", default=None)
     args = parser.parse_args(argv)
@@ -45,7 +46,11 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"ok": False, "error": f"challenge {args.challenge_id} not found"}))
         return 1
 
-    work_root = Path(args.work_root).expanduser().resolve()
+    work_root = (
+        Path(args.work_root).expanduser().resolve()
+        if args.work_root
+        else default_work_root()
+    )
     result = solve_challenge(
         client,
         ch,

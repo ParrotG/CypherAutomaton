@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import subprocess
+import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +21,22 @@ DEFAULT_WORK_ROOT = Path("/work")
 BASH_TIMEOUT = 120.0
 
 
+def default_work_root() -> Path:
+    """Return a writable work root for local tests or the arena /work mount."""
+    explicit = os.environ.get("WORK_ROOT") or os.environ.get("ARENA_WORK_ROOT")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    try:
+        DEFAULT_WORK_ROOT.mkdir(parents=True, exist_ok=True)
+        if os.access(DEFAULT_WORK_ROOT, os.W_OK):
+            return DEFAULT_WORK_ROOT.resolve()
+    except OSError:
+        pass
+    fallback = Path(tempfile.gettempdir()) / "arena-work"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback.resolve()
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -27,6 +46,32 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _agent_home() -> str:
+    """Locate the directory that contains the official ``ctfd.py`` helper."""
+    explicit = os.environ.get("AGENT_HOME")
+    if explicit:
+        return explicit
+    if Path("/opt/agent/ctfd.py").is_file():
+        return "/opt/agent"
+    local = Path(__file__).resolve().parent / "official"
+    if (local / "ctfd.py").is_file():
+        return str(local)
+    return "/opt/agent"
+
+
+def _renew_loop(client: CTFdClient, cid: int, stop_event: threading.Event, interval: float) -> None:
+    """Best-effort dynamic instance renewal while an attempt is running."""
+    if interval <= 0:
+        return
+    while not stop_event.wait(interval):
+        try:
+            client.renew(cid)
+        except Exception:
+            # Renewal is best effort.  A failed renew does not abort solving;
+            # the next tick will try again.
+            pass
 
 
 def prepare_files(client: CTFdClient, ch: dict[str, Any], cdir: Path) -> list[str]:
@@ -93,7 +138,7 @@ def build_prompt(
                 "Use the official helper:",
                 "",
                 "```python",
-                "import sys; sys.path.insert(0, '/opt/agent')",
+                f"import sys; sys.path.insert(0, {_agent_home()!r})",
                 "from ctfd import connect_pwn",
                 "sock = connect_pwn(host, port, team_key)",
                 "```",
@@ -160,17 +205,30 @@ def make_run_bash(cdir: Path) -> Callable[[str], str]:
         if blocked:
             return f"(blocked by arena bash policy: {blocked})"
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 ["bash", "-lc", cmd],
                 cwd=str(cdir),
-                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
-                timeout=BASH_TIMEOUT,
+                start_new_session=True,
             )
-            output = (proc.stdout or "") + (proc.stderr or "")
+            try:
+                output, _ = proc.communicate(timeout=BASH_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                # Kill the whole process group.  A plain Popen.kill() only
+                # terminates bash and can leave grandchildren holding the
+                # output pipe open, which used to make run_bash hang forever.
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                output, _ = proc.communicate()
+                return f"(command timed out after {BASH_TIMEOUT:.0f}s)" + (
+                    "\n" + output if output else ""
+                )
             return output if output.strip() else f"(no output, exit={proc.returncode})"
-        except subprocess.TimeoutExpired:
-            return f"(command timed out after {BASH_TIMEOUT:.0f}s)"
         except Exception as exc:  # noqa: BLE001 - tool errors are returned to the model
             return f"(execution error: {type(exc).__name__}: {exc})"
 
@@ -184,12 +242,15 @@ def solve_challenge(
     *,
     max_attempts: int | None = None,
     brain_factory: Callable[..., Any] = Brain,
-    work_root: Path = DEFAULT_WORK_ROOT,
+    work_root: Path | None = None,
     events_path: Path | None = None,
     prepared_filenames: list[str] | None = None,
 ) -> dict[str, Any]:
+    if work_root is None:
+        work_root = default_work_root()
+    work_root = Path(work_root)
     cid = int(ch["id"])
-    cdir = Path(work_root) / str(cid)
+    cdir = work_root / str(cid)
     dynamic = str(ch.get("type") or "") == "dynamic_iac"
     connection: str | None = None
     filenames: list[str] = []
@@ -199,6 +260,8 @@ def solve_challenge(
     attempts_made = 0
     started_at = _utc_now()
     submit_flags = _env_bool("SUBMIT_FLAGS", True)
+    renew_stop: threading.Event | None = None
+    renew_thread: threading.Thread | None = None
     if max_attempts is None:
         max_attempts = int(os.environ.get("MAX_ATTEMPTS", "3"))
     max_attempts = max(1, int(max_attempts))
@@ -211,6 +274,16 @@ def solve_challenge(
             filenames = list(prepared_filenames)
         if dynamic:
             connection = boot_dynamic(client, cid)
+            if connection:
+                renew_interval = float(os.environ.get("RENEW_INTERVAL_SECONDS", "60"))
+                renew_stop = threading.Event()
+                renew_thread = threading.Thread(
+                    target=_renew_loop,
+                    args=(client, cid, renew_stop, renew_interval),
+                    daemon=True,
+                    name=f"renew-{cid}",
+                )
+                renew_thread.start()
         run_bash = make_run_bash(cdir)
         event_file = events_path if events_path is not None else cdir / "events.jsonl"
 
@@ -265,6 +338,10 @@ def solve_challenge(
     except Exception as exc:  # noqa: BLE001 - one challenge must not kill the scheduler
         final_result = {"solved": False, "error": f"{type(exc).__name__}: {exc}"}
     finally:
+        if renew_stop is not None:
+            renew_stop.set()
+        if renew_thread is not None:
+            renew_thread.join(timeout=2.0)
         if dynamic:
             destroy_dynamic(client, cid)
 

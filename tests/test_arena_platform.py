@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from arena.platform import is_practice, select_targets
-from arena.solver import build_prompt, make_run_bash, prepare_files, solve_challenge
+from arena.official.ctfd import CTFdClient
+from arena.platform import RetryingCTFdClient, is_practice, resolve_mode, select_targets
+from arena.solver import (
+    _renew_loop,
+    build_prompt,
+    default_work_root,
+    make_run_bash,
+    prepare_files,
+    solve_challenge,
+)
 
 
 class FakeClient:
@@ -16,6 +26,7 @@ class FakeClient:
         self.destroyed: list[int] = []
         self.submitted: list[tuple[int, str]] = []
         self.downloads: list[tuple[str, str]] = []
+        self.renewed: list[int] = []
 
     def download(self, url: str, dest: str) -> None:
         self.downloads.append((url, dest))
@@ -32,6 +43,10 @@ class FakeClient:
         self.destroyed.append(cid)
         return True
 
+    def renew(self, cid: int) -> dict:
+        self.renewed.append(cid)
+        return {"renewed": True}
+
     def submit(self, cid: int, flag: str) -> dict:
         self.submitted.append((cid, flag))
         return {"status": "correct"}
@@ -45,6 +60,12 @@ class FakeBrain:
     def solve(self, prompt: str) -> dict:
         self.prompt = prompt
         return {"solved": True, "steps": 1, "flag": "INCYPHER{test}"}
+
+
+class SlowFakeBrain(FakeBrain):
+    def solve(self, prompt: str) -> dict:
+        time.sleep(0.08)
+        return super().solve(prompt)
 
 
 class RetryBrain:
@@ -79,6 +100,77 @@ class ArenaPlatformTests(unittest.TestCase):
     def test_practice_detection(self) -> None:
         self.assertTrue(is_practice({"category": "(Practice) web"}))
         self.assertFalse(is_practice({"category": "web"}))
+
+    def test_auto_mode_prefers_competition_when_present(self) -> None:
+        rows = [
+            {"id": 1, "category": "(Practice) web"},
+            {"id": 2, "category": "web"},
+        ]
+        self.assertEqual(resolve_mode(rows, "auto"), "competition")
+
+    def test_auto_mode_falls_back_to_practice(self) -> None:
+        rows = [{"id": 1, "category": "(Practice) web"}]
+        self.assertEqual(resolve_mode(rows, "auto"), "practice")
+
+    def test_default_work_root_respects_env(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"WORK_ROOT": temp}, clear=False
+        ):
+            self.assertEqual(default_work_root(), Path(temp).resolve())
+
+    def test_renew_loop_ticks_and_stops(self) -> None:
+        client = FakeClient()
+        stop = threading.Event()
+        thread = threading.Thread(
+            target=_renew_loop, args=(client, 42, stop, 0.01), daemon=True
+        )
+        thread.start()
+        time.sleep(0.05)
+        stop.set()
+        thread.join(timeout=1)
+        self.assertIn(42, client.renewed)
+        self.assertFalse(thread.is_alive())
+
+    def test_solve_challenge_renews_dynamic_instance(self) -> None:
+        client = FakeClient()
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"RENEW_INTERVAL_SECONDS": "0.01"}, clear=False
+        ):
+            result = solve_challenge(
+                client,
+                {
+                    "id": 42,
+                    "name": "Parcelport",
+                    "category": "(Practice) web",
+                    "points": 500,
+                    "type": "dynamic_iac",
+                    "description": "web",
+                    "files": [],
+                },
+                max_steps=3,
+                brain_factory=SlowFakeBrain,
+                work_root=Path(temp),
+            )
+        self.assertTrue(result["solved"])
+        self.assertIn(42, client.renewed)
+        self.assertEqual(client.destroyed, [42])
+
+    def test_retrying_client_retries_transient_errors(self) -> None:
+        client = RetryingCTFdClient(
+            "https://example.invalid",
+            "token",
+            max_attempts=3,
+            retry_base=0.001,
+            retry_max_wait=0.002,
+        )
+        with patch.object(
+            CTFdClient,
+            "_call",
+            side_effect=[(500, {"ok": False}), (200, {"ok": True, "data": {}})],
+        ):
+            code, payload = client._call("GET", "/x")
+        self.assertEqual(code, 200)
+        self.assertTrue(payload["ok"])
 
     def test_select_targets_filters_and_sorts(self) -> None:
         rows = [
