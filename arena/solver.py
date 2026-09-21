@@ -139,6 +139,7 @@ def solve_challenge(
     brain_factory: Callable[..., Any] = Brain,
     work_root: Path = DEFAULT_WORK_ROOT,
     events_path: Path | None = None,
+    prepared_filenames: list[str] | None = None,
 ) -> dict[str, Any]:
     cid = int(ch["id"])
     cdir = Path(work_root) / str(cid)
@@ -156,7 +157,11 @@ def solve_challenge(
     max_attempts = max(1, int(max_attempts))
 
     try:
-        filenames = prepare_files(client, ch, cdir)
+        if prepared_filenames is None:
+            filenames = prepare_files(client, ch, cdir)
+        else:
+            cdir.mkdir(parents=True, exist_ok=True)
+            filenames = list(prepared_filenames)
         if dynamic:
             connection = boot_dynamic(client, cid)
         run_bash = make_run_bash(cdir)
