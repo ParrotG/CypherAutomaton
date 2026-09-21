@@ -45,6 +45,21 @@ class FakeBrain:
         return {"solved": True, "steps": 1, "flag": "INCYPHER{test}"}
 
 
+class RetryBrain:
+    instances: list["RetryBrain"] = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.prompt = ""
+        RetryBrain.instances.append(self)
+
+    def solve(self, prompt: str) -> dict:
+        self.prompt = prompt
+        if len(RetryBrain.instances) == 1:
+            return {"solved": False, "steps": 1, "error": "context_limit"}
+        return {"solved": True, "steps": 1, "flag": "INCYPHER{retry}"}
+
+
 class ArenaPlatformTests(unittest.TestCase):
     def test_practice_detection(self) -> None:
         self.assertTrue(is_practice({"category": "(Practice) web"}))
@@ -63,6 +78,34 @@ class ArenaPlatformTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in practice], [3])
         only = select_targets(rows, mode="competition", only_ids=[1, 2], include_solved=True)
         self.assertEqual([row["id"] for row in only], [2, 1])
+
+
+    def test_solve_challenge_retries_with_summary(self) -> None:
+        RetryBrain.instances = []
+        client = FakeClient()
+        with tempfile.TemporaryDirectory() as temp:
+            result = solve_challenge(
+                client,
+                {
+                    "id": 90,
+                    "name": "Dear Diary",
+                    "category": "(Practice) forensics",
+                    "points": 100,
+                    "type": "standard",
+                    "description": "diary",
+                    "files": [],
+                },
+                max_steps=3,
+                max_attempts=2,
+                brain_factory=RetryBrain,
+                work_root=Path(temp),
+            )
+            summary_file = Path(temp) / "90" / "attempts" / "001" / "summary.json"
+            self.assertTrue(summary_file.is_file())
+            second_prompt = RetryBrain.instances[1].prompt
+        self.assertTrue(result["solved"])
+        self.assertEqual(result["attempt_count"], 2)
+        self.assertIn("Previous attempt summary", second_prompt)
 
     def test_prepare_files_downloads_into_challenge_dir(self) -> None:
         client = FakeClient()

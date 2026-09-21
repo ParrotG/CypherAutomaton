@@ -26,8 +26,8 @@ class ArenaMainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             calls = []
 
-            def fake_solve(client, ch, *, max_steps, work_root, events_path):
-                calls.append((ch["id"], max_steps, work_root, events_path))
+            def fake_solve(client, ch, *, max_steps, max_attempts, work_root, events_path):
+                calls.append((ch["id"], max_steps, max_attempts, work_root, events_path))
                 return {
                     "id": ch["id"],
                     "name": ch["name"],
@@ -54,7 +54,8 @@ class ArenaMainTests(unittest.TestCase):
             self.assertTrue(results["results"][0]["solved"])
             self.assertEqual(calls[0][0], 90)
             self.assertEqual(calls[0][1], 5)
-            self.assertEqual(Path(calls[0][3]), Path(temp) / "90" / "events.jsonl")
+            self.assertEqual(calls[0][2], 3)
+            self.assertEqual(Path(calls[0][4]), Path(temp) / "90" / "events.jsonl")
 
 
 if __name__ == "__main__":

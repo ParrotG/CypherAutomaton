@@ -15,8 +15,14 @@ def utc_now() -> str:
 
 
 class EventLogger:
-    def __init__(self, path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        *,
+        base: dict[str, Any] | None = None,
+    ) -> None:
         self.path = Path(path).expanduser() if path else None
+        self.base = dict(base or {})
         self._lock = threading.Lock()
         self._handle: Any | None = None
         if self.path is not None:
@@ -30,6 +36,7 @@ class EventLogger:
             "ts": time.time(),
             "utc": utc_now(),
             "kind": kind,
+            **self.base,
             **payload,
         }
         line = json.dumps(event, ensure_ascii=False, default=str)

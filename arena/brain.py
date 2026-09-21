@@ -21,6 +21,7 @@ class Brain:
         model: Any | None = None,
         workspace_dir: str | None = None,
         events_path: str | None = None,
+        log_context: dict[str, Any] | None = None,
     ) -> None:
         self.run_bash = run_bash
         self.submit_flag = submit_flag
@@ -28,6 +29,7 @@ class Brain:
         self.model = model
         self.workspace_dir = workspace_dir
         self.events_path = events_path
+        self.log_context = dict(log_context or {})
         self.context_window_tokens = int(
             os.environ.get("CONTEXT_WINDOW_TOKENS", "1000000")
         )
@@ -43,7 +45,7 @@ class Brain:
             workspace_dir=self.workspace_dir,
             max_output=int(os.environ.get("MAX_TOOL_OUTPUT", "20000")),
         )
-        events = EventLogger(self.events_path)
+        events = EventLogger(self.events_path, base=self.log_context)
         try:
             return AgentRuntime(
                 model=model,

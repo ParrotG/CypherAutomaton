@@ -28,6 +28,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--challenge-id", type=int, required=True)
     parser.add_argument("--max-steps", type=int, default=int(os.environ.get("MAX_STEPS", "1000000")))
     parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=int(os.environ.get("MAX_ATTEMPTS", "3")),
+    )
+    parser.add_argument(
         "--work-root",
         default=os.environ.get("ARENA_WORK_ROOT", "/work"),
     )
@@ -45,6 +50,7 @@ def main(argv: list[str] | None = None) -> int:
         client,
         ch,
         max_steps=args.max_steps,
+        max_attempts=args.max_attempts,
         work_root=work_root,
         events_path=work_root / str(args.challenge_id) / "events.jsonl",
     )
@@ -58,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         "solved": result.get("solved"),
         "steps": result.get("steps"),
         "seconds": result.get("seconds"),
+        "attempts": result.get("attempt_count"),
         "error": result.get("error"),
         "out": str(out),
         "events": str(work_root / str(args.challenge_id) / "events.jsonl"),

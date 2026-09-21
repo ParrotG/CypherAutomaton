@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from .brain import Brain
 from .official.ctfd import CTFdClient
+from .runtime.summary import build_attempt_summary
 
 DEFAULT_WORK_ROOT = Path("/work")
 BASH_TIMEOUT = 120.0
@@ -56,6 +57,7 @@ def build_prompt(
     cdir: Path,
     filenames: list[str],
     connection: str | None,
+    previous_summary: str | None = None,
 ) -> str:
     lines = [
         f"# Challenge: {ch.get('name')}",
@@ -84,6 +86,14 @@ def build_prompt(
                 "```",
                 "",
             ]
+    if previous_summary:
+        lines += [
+            "## Previous attempt summary",
+            previous_summary.strip(),
+            "",
+            "Continue from this summary. Do not repeat failed actions if they produced no new information.",
+            "",
+        ]
     lines += ["Solve the challenge, then call submit_flag with the flag."]
     return "\n".join(lines)
 
@@ -113,6 +123,7 @@ def solve_challenge(
     ch: dict[str, Any],
     max_steps: int = 40,
     *,
+    max_attempts: int | None = None,
     brain_factory: Callable[..., Any] = Brain,
     work_root: Path = DEFAULT_WORK_ROOT,
     events_path: Path | None = None,
@@ -123,25 +134,65 @@ def solve_challenge(
     connection: str | None = None
     filenames: list[str] = []
     started = time.perf_counter()
-    result: dict[str, Any]
+    final_result: dict[str, Any] = {"solved": False, "error": "not_started"}
+    attempts: list[dict[str, Any]] = []
+    attempts_made = 0
+    if max_attempts is None:
+        max_attempts = int(os.environ.get("MAX_ATTEMPTS", "3"))
+    max_attempts = max(1, int(max_attempts))
 
     try:
         filenames = prepare_files(client, ch, cdir)
         if dynamic:
             connection = boot_dynamic(client, cid)
-        prompt = build_prompt(ch, cdir=cdir, filenames=filenames, connection=connection)
         run_bash = make_run_bash(cdir)
         event_file = events_path if events_path is not None else cdir / "events.jsonl"
-        brain = brain_factory(
-            run_bash=run_bash,
-            submit_flag=lambda flag: client.submit(cid, flag),
-            max_steps=max_steps,
-            workspace_dir=str(cdir),
-            events_path=str(event_file),
-        )
-        result = dict(brain.solve(prompt))
+
+        for attempt in range(1, max_attempts + 1):
+            attempts_made += 1
+            previous_summary = attempts[-1]["summary_text"] if attempts else None
+            prompt = build_prompt(
+                ch,
+                cdir=cdir,
+                filenames=filenames,
+                connection=connection,
+                previous_summary=previous_summary,
+            )
+            brain = brain_factory(
+                run_bash=run_bash,
+                submit_flag=lambda flag: client.submit(cid, flag),
+                max_steps=max_steps,
+                workspace_dir=str(cdir),
+                events_path=str(event_file),
+                log_context={"attempt": attempt, "challenge_id": cid},
+            )
+            try:
+                result = dict(brain.solve(prompt))
+            except Exception as exc:  # noqa: BLE001 - turn crashes into a retryable attempt
+                result = {"solved": False, "error": f"{type(exc).__name__}: {exc}"}
+            result["attempt"] = attempt
+            final_result = result
+            if result.get("solved"):
+                break
+            summary = build_attempt_summary(
+                challenge_id=cid,
+                cdir=cdir,
+                attempt=attempt,
+                result=result,
+                events_path=event_file,
+            )
+            attempts.append(
+                {
+                    "attempt": attempt,
+                    "status": summary.get("status"),
+                    "summary_text": summary.get("summary_text", ""),
+                    "result": result,
+                }
+            )
+            if attempt < max_attempts:
+                continue
     except Exception as exc:  # noqa: BLE001 - one challenge must not kill the scheduler
-        result = {"solved": False, "error": f"{type(exc).__name__}: {exc}"}
+        final_result = {"solved": False, "error": f"{type(exc).__name__}: {exc}"}
     finally:
         if dynamic:
             destroy_dynamic(client, cid)
@@ -156,5 +207,7 @@ def solve_challenge(
         "had_files": bool(filenames),
         "had_instance": bool(connection),
         "seconds": seconds,
-        **result,
+        "attempt_count": attempts_made or 1,
+        "attempts": attempts,
+        **final_result,
     }

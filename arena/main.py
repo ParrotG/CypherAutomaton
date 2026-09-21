@@ -48,6 +48,7 @@ def main() -> int:
         os.environ.get("RESULTS_PATH", str(work_root / "results.json"))
     ).expanduser().resolve()
     max_steps = int(os.environ.get("MAX_STEPS", "1000000"))
+    max_attempts = int(os.environ.get("MAX_ATTEMPTS", "3"))
     only_ids = _split_env("ONLY_IDS", int)
     categories = _split_env("CATEGORIES", str)
 
@@ -94,6 +95,7 @@ def main() -> int:
             client,
             ch,
             max_steps=max_steps,
+            max_attempts=max_attempts,
             work_root=work_root,
             events_path=work_root / str(cid) / "events.jsonl",
         )
