@@ -129,6 +129,49 @@ class ArenaMainTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(state["max"], 1)
 
+    def test_mixed_queue_keeps_one_dynamic_and_fills_static(self) -> None:
+        challenges = [
+            {"id": 1, "name": "D1", "category": "web", "points": 100, "type": "dynamic_iac"},
+            {"id": 2, "name": "S1", "category": "web", "points": 100, "type": "standard"},
+            {"id": 3, "name": "S2", "category": "web", "points": 100, "type": "standard"},
+            {"id": 4, "name": "S3", "category": "web", "points": 100, "type": "standard"},
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            lock = threading.Lock()
+            state = {"dyn_active": 0, "max_dyn": 0, "overlap": False}
+
+            def fake_solve(client, ch, *, max_steps, max_attempts, work_root, events_path, prepared_filenames):
+                time.sleep(0.02)
+                if ch["type"] == "dynamic_iac":
+                    with lock:
+                        state["dyn_active"] += 1
+                        state["max_dyn"] = max(state["max_dyn"], state["dyn_active"])
+                    time.sleep(0.15)
+                    with lock:
+                        state["dyn_active"] -= 1
+                else:
+                    time.sleep(0.1)
+                    with lock:
+                        if state["dyn_active"] > 0:
+                            state["overlap"] = True
+                return {"id": ch["id"], "name": ch["name"], "solved": True, "steps": 1, "seconds": 0.1}
+
+            env = {
+                "ARENA_MODE": "competition",
+                "WORK_ROOT": temp,
+                "RESULTS_PATH": str(Path(temp) / "results.json"),
+                "MAX_CONCURRENT_CHALLENGES": "2",
+            }
+            with patch.dict(os.environ, env, clear=False), patch(
+                "arena.main.connect_from_env", return_value=FakeClient(challenges)
+            ), patch("arena.main.prepare_files", return_value=[]), patch(
+                "arena.main.solve_challenge", side_effect=fake_solve
+            ):
+                code = arena_main.main()
+        self.assertEqual(code, 0)
+        self.assertEqual(state["max_dyn"], 1)
+        self.assertTrue(state["overlap"])
+
 
 if __name__ == "__main__":
     unittest.main()

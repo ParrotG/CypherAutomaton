@@ -2,9 +2,11 @@
 
 Policy:
 - Dynamic challenges are globally serialized: at most one live instance.
-- Static challenges may run concurrently.
-- Static challenge files are preloaded before solving starts.
-- Challenges are attempted in points-ascending order.
+- If static and dynamic work remain, keep one dynamic slot active and use the
+  remaining concurrency slots for static challenges (this policy wins over
+  points ordering).
+- Static challenges are preloaded before solving starts.
+- Within each class, challenges are attempted in points-ascending order.
 - Default challenge concurrency is 2, configurable via MAX_CONCURRENT_CHALLENGES.
 """
 
@@ -16,6 +18,7 @@ import os
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -87,11 +90,7 @@ def _results_payload(
     return payload
 
 
-def _preload_static(
-    client,
-    ch: dict[str, Any],
-    work_root: Path,
-) -> tuple[int, list[str]]:
+def _preload_static(client, ch: dict[str, Any], work_root: Path) -> tuple[int, list[str]]:
     cid = int(ch["id"])
     cdir = work_root / str(cid)
     return cid, prepare_files(client, ch, cdir)
@@ -146,6 +145,8 @@ def main() -> int:
         only_ids=only_ids,
         categories=categories,
     )
+    static_targets = [ch for ch in targets if not _is_dynamic(ch)]
+    dynamic_targets = [ch for ch in targets if _is_dynamic(ch)]
 
     print(
         json.dumps(
@@ -156,6 +157,8 @@ def main() -> int:
                 "work_root": str(work_root),
                 "results_path": str(results_path),
                 "challenge_count": len(targets),
+                "static_count": len(static_targets),
+                "dynamic_count": len(dynamic_targets),
                 "max_concurrent_challenges": max_concurrent,
                 "ids": [int(ch["id"]) for ch in targets],
             },
@@ -165,7 +168,6 @@ def main() -> int:
     )
 
     prepared: dict[int, list[str]] = {}
-    static_targets = [ch for ch in targets if not _is_dynamic(ch)]
     if static_targets:
         print(
             json.dumps(
@@ -191,11 +193,7 @@ def main() -> int:
                 prepared[cid] = filenames
                 print(
                     json.dumps(
-                        {
-                            "event": "preload_finish",
-                            "id": cid,
-                            "files": filenames,
-                        },
+                        {"event": "preload_finish", "id": cid, "files": filenames},
                         ensure_ascii=False,
                     ),
                     flush=True,
@@ -204,55 +202,87 @@ def main() -> int:
     results: list[dict[str, Any]] = []
     run_started = time.perf_counter()
     dynamic_lock = threading.Lock()
-    with futures.ThreadPoolExecutor(max_workers=max_concurrent) as pool:
-        future_map = {
-            pool.submit(
-                _run_challenge,
-                client,
-                ch,
-                work_root=work_root,
-                max_steps=max_steps,
-                max_attempts=max_attempts,
-                prepared_filenames=prepared.get(int(ch["id"])),
-                dynamic_lock=dynamic_lock,
-            ): ch
-            for ch in targets
-        }
-        for future in futures.as_completed(future_map):
-            ch = future_map[future]
-            cid = int(ch["id"])
-            try:
-                result = future.result()
-            except Exception as exc:  # noqa: BLE001 - never lose the scheduler
-                result = {
+
+    static_queue = deque(static_targets)
+    dynamic_queue = deque(dynamic_targets)
+    running: dict[futures.Future, dict[str, Any]] = {}
+
+    def submit(ch: dict[str, Any]) -> None:
+        cid = int(ch["id"])
+        print(
+            json.dumps(
+                {
+                    "event": "challenge_start",
                     "id": cid,
                     "name": ch.get("name"),
-                    "category": ch.get("category"),
-                    "points": ch.get("points"),
                     "type": ch.get("type"),
-                    "solved": False,
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-            results.append(result)
-            payload = _results_payload(mode, results)
-            _write_json(results_path, payload)
-            print(
-                json.dumps(
-                    {
-                        "event": "challenge_finish",
+                    "points": ch.get("points"),
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        future = pool.submit(
+            _run_challenge,
+            client,
+            ch,
+            work_root=work_root,
+            max_steps=max_steps,
+            max_attempts=max_attempts,
+            prepared_filenames=prepared.get(cid),
+            dynamic_lock=dynamic_lock,
+        )
+        running[future] = ch
+
+    with futures.ThreadPoolExecutor(max_workers=max_concurrent) as pool:
+        while static_queue or dynamic_queue or running:
+            dynamic_running = any(_is_dynamic(ch) for ch in running.values())
+            # Keep exactly one dynamic challenge in flight when one remains.
+            if dynamic_queue and not dynamic_running and len(running) < max_concurrent:
+                submit(dynamic_queue.popleft())
+            # Fill all remaining slots with static challenges.
+            while static_queue and len(running) < max_concurrent:
+                submit(static_queue.popleft())
+
+            if not running:
+                break
+
+            done, _ = futures.wait(running, return_when=futures.FIRST_COMPLETED)
+            for future in done:
+                ch = running.pop(future)
+                cid = int(ch["id"])
+                try:
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001 - never lose the scheduler
+                    result = {
                         "id": cid,
                         "name": ch.get("name"),
-                        "solved": result.get("solved"),
-                        "steps": result.get("steps"),
-                        "seconds": result.get("seconds"),
-                        "started_at": result.get("started_at"),
-                        "finished_at": result.get("finished_at"),
-                        "error": result.get("error"),
-                    },
-                    ensure_ascii=False,
-                ),
-                flush=True,
-            )
+                        "category": ch.get("category"),
+                        "points": ch.get("points"),
+                        "type": ch.get("type"),
+                        "solved": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                results.append(result)
+                payload = _results_payload(mode, results)
+                _write_json(results_path, payload)
+                print(
+                    json.dumps(
+                        {
+                            "event": "challenge_finish",
+                            "id": cid,
+                            "name": ch.get("name"),
+                            "solved": result.get("solved"),
+                            "steps": result.get("steps"),
+                            "seconds": result.get("seconds"),
+                            "started_at": result.get("started_at"),
+                            "finished_at": result.get("finished_at"),
+                            "error": result.get("error"),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
 
     total = round(time.perf_counter() - run_started, 1)
     payload = _results_payload(mode, results, total_seconds=total)
