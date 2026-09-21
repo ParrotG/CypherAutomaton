@@ -42,6 +42,11 @@ def _estimate_message_tokens(message: dict[str, Any]) -> int:
     return _estimate_text_tokens(json.dumps(message, ensure_ascii=False, default=str))
 
 
+def _preview(value: Any, limit: int = 500) -> str:
+    text = str(value or "")
+    return text if len(text) <= limit else text[:limit] + "... "
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -118,8 +123,8 @@ class AgentRuntime:
             self._log(
                 "model_request",
                 step=step,
-                messages=messages,
                 message_count=len(messages),
+                last_message=_preview(messages[-1] if messages else None),
                 estimated_prompt_tokens=estimated_prompt_tokens,
                 context_limit_tokens=self.context_limit_tokens,
             )

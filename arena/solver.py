@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -110,8 +111,54 @@ def build_prompt(
     return "\n".join(lines)
 
 
+_BLOCKED_COMMAND_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"(?:^|[;&|]\s*)find\s+/(?=\s|$)", re.M),
+        "recursive root filesystem scan (`find /`) is not allowed",
+    ),
+    (
+        re.compile(r"(?:^|[;&|]\s*)find\s+/(?:proc|sys|opt|dev)(?=\s|/)", re.M),
+        "system directory scan is not allowed",
+    ),
+    (
+        re.compile(r"(?:^|[;&|]\s*)find\s+/work(?=\s|$)", re.M),
+        "scanning the shared /work root is not allowed",
+    ),
+    (
+        re.compile(r"(?:^|[;&|]\s*)grep\b[^\n;|&]*\s/(?=\s|$)", re.M),
+        "root filesystem grep is not allowed",
+    ),
+    (
+        re.compile(r"(?:^|[;&|]\s*)rg\b[^\n;|&]*\s/(?=\s|$)", re.M),
+        "root filesystem ripgrep is not allowed",
+    ),
+    (
+        re.compile(r"(?:^|[;&|]\s*)grep\b[^\n;|&]*\s/work(?=\s|$)", re.M),
+        "scanning the shared /work root is not allowed",
+    ),
+    (
+        re.compile(r"(?:^|[;&|]\s*)cd\s+/(?=\s|$)", re.M),
+        "changing to the filesystem root is not allowed",
+    ),
+    (
+        re.compile(r"\bevents\.jsonl\b|\bsummary\.json\b"),
+        "reading arena logs or summaries is not allowed",
+    ),
+)
+
+
+def _command_block_reason(cmd: str) -> str | None:
+    for pattern, reason in _BLOCKED_COMMAND_PATTERNS:
+        if pattern.search(cmd):
+            return reason
+    return None
+
+
 def make_run_bash(cdir: Path) -> Callable[[str], str]:
     def run_bash(cmd: str) -> str:
+        blocked = _command_block_reason(cmd)
+        if blocked:
+            return f"(blocked by arena bash policy: {blocked})"
         try:
             proc = subprocess.run(
                 ["bash", "-lc", cmd],

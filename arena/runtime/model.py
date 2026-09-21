@@ -196,6 +196,11 @@ class ModelClient:
             kwargs["temperature"] = self.temperature
         if self.max_tokens:
             kwargs["max_tokens"] = self.max_tokens
+        if self.provider == "openrouter" or "openrouter.ai" in self.base_url:
+            kwargs["extra_body"] = {
+                "reasoning": {"effort": "high"},
+                "provider": {"order": ["deepseek"], "allow_fallbacks": True},
+            }
         return kwargs
 
     def _backoff(self, attempt: int) -> float:

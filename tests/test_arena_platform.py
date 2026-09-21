@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from arena.platform import is_practice, select_targets
-from arena.solver import build_prompt, prepare_files, solve_challenge
+from arena.solver import build_prompt, make_run_bash, prepare_files, solve_challenge
 
 
 class FakeClient:
@@ -160,6 +160,16 @@ class ArenaPlatformTests(unittest.TestCase):
             self.assertEqual(names, ["a.bin"])
             self.assertTrue((Path(temp) / "94" / "a.bin").is_file())
         self.assertEqual(len(client.downloads), 1)
+
+
+    def test_bash_policy_blocks_root_scans_and_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            run_bash = make_run_bash(Path(temp))
+            self.assertIn("blocked", run_bash("find /"))
+            self.assertIn("blocked", run_bash("grep -r rootme /"))
+            self.assertIn("blocked", run_bash("cat events.jsonl"))
+            self.assertIn("blocked", run_bash("find /work"))
+            self.assertIn("ok", run_bash("printf ok"))
 
     def test_build_prompt_mentions_pow_helper(self) -> None:
         prompt = build_prompt(

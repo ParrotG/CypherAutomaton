@@ -140,6 +140,10 @@ class ArenaBrainTests(unittest.TestCase):
             lines = [json.loads(line) for line in events.read_text().splitlines() if line.strip()]
         self.assertTrue(result["solved"])
         kinds = [line["kind"] for line in lines]
+        model_requests = [line for line in lines if line["kind"] == "model_request"]
+        self.assertTrue(model_requests)
+        self.assertNotIn("messages", model_requests[0])
+        self.assertIn("message_count", model_requests[0])
         for expected in (
             "run_start",
             "model_request",
@@ -217,6 +221,29 @@ class ArenaModelTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=False):
             client = ModelClient.from_env()
         self.assertEqual(client.model, "test-model")
+
+
+    def test_openrouter_request_body_sets_reasoning_and_provider(self) -> None:
+        client = ModelClient(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="deepseek/deepseek-v4.1-flash",
+        )
+        kwargs = client._request_kwargs([{"role": "user", "content": "hi"}], [])
+        self.assertEqual(kwargs["extra_body"]["reasoning"], {"effort": "high"})
+        self.assertEqual(
+            kwargs["extra_body"]["provider"],
+            {"order": ["deepseek"], "allow_fallbacks": True},
+        )
+
+    def test_deepseek_request_body_has_no_openrouter_settings(self) -> None:
+        client = ModelClient(
+            api_key="test-key",
+            base_url="https://api.deepseek.com",
+            model="deepseek-flash",
+        )
+        kwargs = client._request_kwargs([{"role": "user", "content": "hi"}], [])
+        self.assertNotIn("extra_body", kwargs)
 
     def test_transient_connection_errors_are_retried(self) -> None:
         client = ModelClient(

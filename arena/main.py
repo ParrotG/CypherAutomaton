@@ -137,7 +137,7 @@ def main() -> int:
     me = client.me()
     solved_ids = {int(cid) for cid in (me.get("solved") or [])}
     include_solved = _env_bool("INCLUDE_SOLVED", default=(mode == "practice"))
-    targets = select_targets(
+    briefs = select_targets(
         client.list_challenges(),
         mode=mode,
         solved_ids=solved_ids,
@@ -145,6 +145,24 @@ def main() -> int:
         only_ids=only_ids,
         categories=categories,
     )
+
+    # list_challenges() returns only a brief.  Load the full challenge record
+    # so preloading, prompts, and file lists are based on the authoritative
+    # description and attachment URLs.
+    targets: list[dict[str, Any]] = []
+    for brief in briefs:
+        cid = int(brief["id"])
+        try:
+            full = client.challenge(cid)
+        except Exception:
+            full = {}
+        if not full:
+            full = dict(brief)
+        full.setdefault("id", cid)
+        full.setdefault("points", brief.get("points"))
+        full["value"] = full.get("points", brief.get("points"))
+        targets.append(full)
+
     static_targets = [ch for ch in targets if not _is_dynamic(ch)]
     dynamic_targets = [ch for ch in targets if _is_dynamic(ch)]
 

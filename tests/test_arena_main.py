@@ -25,6 +25,12 @@ class FakeClient:
     def list_challenges(self) -> list[dict]:
         return self._challenges
 
+    def challenge(self, cid: int) -> dict:
+        for ch in self._challenges:
+            if int(ch["id"]) == int(cid):
+                return dict(ch)
+        return {}
+
 
 class ArenaMainTests(unittest.TestCase):
     def test_main_runs_selected_single_practice_challenge(self) -> None:
@@ -171,6 +177,47 @@ class ArenaMainTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(state["max_dyn"], 1)
         self.assertTrue(state["overlap"])
+
+    def test_main_loads_full_challenge_details(self) -> None:
+        challenges = [
+            {
+                "id": 1,
+                "name": "Full",
+                "category": "web",
+                "points": 100,
+                "type": "standard",
+                "description": "FULL-DESCRIPTION",
+                "files": ["https://example.invalid/file.bin"],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            seen = {}
+
+            def fake_prepare(client, ch, cdir):
+                seen["prepare_ch"] = ch
+                return ["file.bin"]
+
+            def fake_solve(client, ch, *, max_steps, max_attempts, work_root, events_path, prepared_filenames):
+                seen["solve_ch"] = ch
+                seen["prepared"] = prepared_filenames
+                return {"id": ch["id"], "name": ch["name"], "solved": True, "steps": 1, "seconds": 0.1}
+
+            env = {
+                "ARENA_MODE": "competition",
+                "WORK_ROOT": temp,
+                "RESULTS_PATH": str(Path(temp) / "results.json"),
+                "MAX_CONCURRENT_CHALLENGES": "1",
+            }
+            with patch.dict(os.environ, env, clear=False), patch(
+                "arena.main.connect_from_env", return_value=FakeClient(challenges)
+            ), patch("arena.main.prepare_files", side_effect=fake_prepare), patch(
+                "arena.main.solve_challenge", side_effect=fake_solve
+            ):
+                code = arena_main.main()
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["prepare_ch"]["description"], "FULL-DESCRIPTION")
+        self.assertEqual(seen["solve_ch"]["files"], ["https://example.invalid/file.bin"])
+        self.assertEqual(seen["prepared"], ["file.bin"])
 
 
 if __name__ == "__main__":
