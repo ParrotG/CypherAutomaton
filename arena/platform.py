@@ -37,6 +37,27 @@ class RetryingCTFdClient(CTFdClient):
         self.retry_base = max(0.05, float(retry_base))
         self.retry_max_wait = max(self.retry_base, float(retry_max_wait))
 
+    @staticmethod
+    def _env_token() -> str:
+        return (
+            os.environ.get("CTF_TOKEN")
+            or os.environ.get("CTFD_TOKEN")
+            or os.environ.get("CTF_SESSION")
+            or ""
+        ).strip()
+
+    def _refresh_token(self) -> None:
+        """Prefer the fresh token injected for this run.
+
+        The official runner mints a new CTFd token at the start of each run.
+        Re-reading the environment before every platform call ensures that a
+        token injected after process start (or a newer value replacing an
+        older local one) is actually used for submissions.
+        """
+        token = self._env_token()
+        if token:
+            self.token = token
+
     def _retry_wait(self, attempt: int) -> float:
         base = min(self.retry_max_wait, self.retry_base * (2 ** max(0, attempt - 1)))
         return base * random.uniform(0.5, 1.5)
@@ -45,6 +66,7 @@ class RetryingCTFdClient(CTFdClient):
         last_code = -1
         last_payload: dict[str, Any] = {"ok": False, "error": "no attempt", "data": None}
         for attempt in range(1, self.max_attempts + 1):
+            self._refresh_token()
             code, payload = super()._call(method, path, body)
             last_code, last_payload = code, payload
             retryable = code == -1 or code == 429 or code >= 500
@@ -56,6 +78,7 @@ class RetryingCTFdClient(CTFdClient):
     def download(self, url: str, dest: str):
         last_error: Exception | None = None
         for attempt in range(1, self.max_attempts + 1):
+            self._refresh_token()
             try:
                 return super().download(url, dest)
             except HTTPError as exc:
@@ -76,11 +99,16 @@ class RetryingCTFdClient(CTFdClient):
 
 def connect_from_env() -> CTFdClient:
     base = (os.environ.get("CTF_BASE") or os.environ.get("CTFD_URL") or "").strip()
-    token = (os.environ.get("CTF_TOKEN") or os.environ.get("CTFD_TOKEN") or "").strip()
+    token = (
+        os.environ.get("CTF_TOKEN")
+        or os.environ.get("CTFD_TOKEN")
+        or os.environ.get("CTF_SESSION")
+        or ""
+    ).strip()
     if not base:
         raise PlatformConfigError("CTF_BASE or CTFD_URL is required")
     if not token:
-        raise PlatformConfigError("CTF_TOKEN or CTFD_TOKEN is required")
+        raise PlatformConfigError("CTF_TOKEN, CTFD_TOKEN or CTF_SESSION is required")
     return RetryingCTFdClient(base, token)
 
 

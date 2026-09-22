@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from arena.brain import Brain
 from arena.runtime.model import ModelClient, ModelConfigError, ModelReply
-from arena.runtime.tools import ToolExecutor
+from arena.runtime.tools import ToolExecutor, normalize_flag
 
 
 class ScriptedModel:
@@ -178,6 +178,15 @@ class ArenaBrainTests(unittest.TestCase):
         outcome = executor.execute("submit_flag", {"flag": "abc123"})
         self.assertTrue(outcome.solved)
         self.assertEqual(outcome.flag, "INCYPHER{abc123}")
+
+    def test_normalizes_wrapped_or_embedded_flags(self) -> None:
+        for raw in (
+            "`INCYPHER{abc123}`",
+            '"INCYPHER{abc123}"',
+            "Here is the flag: INCYPHER{abc123}",
+            "flag{abc123}",
+        ):
+            self.assertEqual(normalize_flag(raw), "INCYPHER{abc123}")
 
 
 
