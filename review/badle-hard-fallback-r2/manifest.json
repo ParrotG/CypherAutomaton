@@ -1,0 +1,67 @@
+{
+  "profile": "badle-hard-static-only",
+  "challenge_id": 4,
+  "platform_acceptance": "unverified",
+  "decode_assumption": "documented_frame_6_selects_capture_index_4_by_range_oracle_offset_origin_unproven",
+  "archive": "badle-hard-source.zip",
+  "archive_sha256": "d5dc98734c3ae320fac310a0f46bffef3e22f7136c435521fec79a8f7d80e90b",
+  "files": [
+    {
+      "path": "deploy/badle_hard/entrypoint.py",
+      "bytes": 13638,
+      "sha256": "d8bd43eb172577c694385c952c607fe388a015b11d50958cbebaecb1814b8493"
+    },
+    {
+      "path": "deploy/badle_hard/Dockerfile",
+      "bytes": 969,
+      "sha256": "4f9e004ed1436bf623016fed62c571293ea1fdf665049b1e2e11ee63af176708"
+    },
+    {
+      "path": "deploy/badle_hard/Dockerfile.dockerignore",
+      "bytes": 210,
+      "sha256": "3896f5dbb8c0f447cb79f760478f54b4609dfaf5d658a36ad47927427d65fb5e"
+    },
+    {
+      "path": "deploy/arena/arena_runtime.py",
+      "bytes": 104182,
+      "sha256": "206e532dce6f14d165781bdf083628f1cb23d48ec4027ebfc837796550469aa0"
+    },
+    {
+      "path": "deploy/arena/d2_badle.py",
+      "bytes": 12640,
+      "sha256": "1582169cdbc05bb3fc8a41fbd7d1b163331771f505bf9d3897c5c6c4270c1591"
+    },
+    {
+      "path": "tests/test_badle_hard_submission.py",
+      "bytes": 18420,
+      "sha256": "2cdcfcb98cc8e2348c187ce82f3b4542276290d8ea2ec5de0e7557ae58f7c03e"
+    },
+    {
+      "path": "tests/test_d2_badle.py",
+      "bytes": 7304,
+      "sha256": "10a7beff6e16a6e36c5cfffadcda4bfcd4b972cfa9b47cf500b29280a32e8b88"
+    },
+    {
+      "path": "docs/BADLE_HARD_SUBMISSION.md",
+      "bytes": 10254,
+      "sha256": "89c5f62830ba19fce34b5d14069fb23cfb20e5e9f7f4cb5ee5f09b594c1eb9f5"
+    },
+    {
+      "path": "docs/solutions/badle-hard.md",
+      "bytes": 2032,
+      "sha256": "111cf8a726ee39f860a13aa7e09c8941412e563214b2a012cb59b4b216bd9d19"
+    },
+    {
+      "path": "scripts/package_badle_hard.py",
+      "bytes": 2525,
+      "sha256": "d5729780403e6b97d8cdc795f2675d9e0b942bf91b953c15e842fbe31d45ca4b"
+    }
+  ],
+  "excluded": [
+    "credentials",
+    "handouts",
+    "candidate_plaintext",
+    "run_evidence",
+    "other_solvers"
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "release": "badle-hard-20260922-r2",
+  "state": "prepared_locally_not_pushed_or_submitted",
+  "challenge": {
+    "id": 4,
+    "name": "BadLE Hard",
+    "category": "healthcare",
+    "type": "standard"
+  },
+  "candidate": {
+    "generated": true,
+    "plaintext_included": false,
+    "sha256": "0ead3e39de337c3285facb1039244faa5570b0588343e71fba7e309b49cf6ac5",
+    "format": "INCYPHER{v1,v2,v3,v4,v5,v6,v7,v8}",
+    "value_count": 8,
+    "spaces": false,
+    "platform_acceptance": "unverified",
+    "decode_assumption": "documented_frame_6_selects_capture_index_4_by_range_oracle_offset_origin_unproven"
+  },
+  "source_handoff": {
+    "archive": "badle-hard-source.zip",
+    "archive_sha256": "d5dc98734c3ae320fac310a0f46bffef3e22f7136c435521fec79a8f7d80e90b",
+    "manifest": "manifest.json"
+  },
+  "team_pipeline_revisions": {
+    "ParrotG/CypherAutomaton": "6e8785a0ce0f4887dfd611a2e9ae098d9c49e1cb"
+  },
+  "verification": {
+    "focused_tests": {
+      "command": "python -B -m unittest tests.test_d2_badle tests.test_badle_hard_submission -v",
+      "tests_run": 28,
+      "seconds": 6.481,
+      "status": "passed"
+    },
+    "affected_tests": {
+      "command": "python -B -m unittest tests.test_d2_badle tests.test_badle_hard_submission tests.test_arena_deterministic -v",
+      "tests_run": 48,
+      "seconds": 13.635,
+      "status": "passed"
+    },
+    "full_tests": {
+      "command": "$env:PYTHONPATH='src'; python -B -m unittest discover -s tests -v",
+      "tests_run": 543,
+      "skipped": 4,
+      "seconds": 91.284,
+      "status": "passed"
+    },
+    "images": [
+      {
+        "tag": "incypher-badle-hard:record-20260922-r2",
+        "id": "sha256:5a11bd84123625b5e5bc6be44fa57a25be0728919ec09dc0acb89eb608dc7d55",
+        "os": "linux",
+        "architecture": "amd64",
+        "submit_mode": "record"
+      },
+      {
+        "tag": "incypher-badle-hard:submit-20260922-r2",
+        "id": "sha256:6f679003dfcbefcd8a4d862f0ae20b965ed2f073ada92fa6720348e360f49b44",
+        "os": "linux",
+        "architecture": "amd64",
+        "submit_mode": "submit"
+      }
+    ],
+    "offline_replays": [
+      {
+        "case": "format_fix_local",
+        "seconds": 0.649792,
+        "final": "candidate_recorded",
+        "submission_attempted": false
+      },
+      {
+        "case": "submit_image_entrypoint",
+        "seconds": 3.98449,
+        "final": "candidate_recorded",
+        "submission_attempted": false
+      },
+      {
+        "case": "submit_image_direct_main",
+        "seconds": 3.717843,
+        "final": "candidate_recorded",
+        "submission_attempted": false
+      }
+    ]
+  },
+  "external_actions": {
+    "github_push": false,
+    "pull_request_created": false,
+    "registry_push": false,
+    "arena_submission": false,
+    "team_deployment_modified": false
+  }
+}

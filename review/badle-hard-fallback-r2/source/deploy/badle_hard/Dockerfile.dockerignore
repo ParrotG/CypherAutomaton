@@ -1,0 +1,9 @@
+**
+!deploy/
+!deploy/arena/
+!deploy/arena/arena_runtime.py
+!deploy/arena/d2_badle.py
+!deploy/badle_hard/
+!deploy/badle_hard/entrypoint.py
+!deploy/badle_hard/Dockerfile
+!deploy/badle_hard/Dockerfile.dockerignore
