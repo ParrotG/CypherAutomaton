@@ -166,6 +166,26 @@ class ArenaPlatformTests(unittest.TestCase):
         self.assertIn(42, client.renewed)
         self.assertEqual(client.destroyed, [42])
 
+    def test_retrying_client_refreshes_token_from_env(self) -> None:
+        client = RetryingCTFdClient(
+            "https://example.invalid",
+            "old-token",
+            max_attempts=1,
+            retry_base=0.001,
+        )
+        seen: list[str] = []
+
+        def fake_call(ctfd_self, method, path, body=None):
+            seen.append(ctfd_self.token)
+            return 200, {"ok": True, "data": {}}
+
+        with patch.dict(os.environ, {"CTF_TOKEN": "new-runtime-token"}, clear=False), patch.object(
+            CTFdClient, "_call", fake_call
+        ):
+            code, payload = client._call("GET", "/x")
+        self.assertEqual(code, 200)
+        self.assertEqual(seen, ["new-runtime-token"])
+
     def test_retrying_client_retries_transient_errors(self) -> None:
         client = RetryingCTFdClient(
             "https://example.invalid",

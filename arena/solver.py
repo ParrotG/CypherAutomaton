@@ -423,6 +423,8 @@ def solve_challenge(
                 verdict = client.submit(cid, flag)
             else:
                 verdict = {"status": "correct", "submission_disabled": True}
+            if not isinstance(verdict, dict):
+                verdict = {"status": str(verdict)}
             if str((verdict or {}).get("status", "")).lower() in ("correct", "already_solved"):
                 solved_event.set()
                 stop_event.set()

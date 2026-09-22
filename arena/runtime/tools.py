@@ -113,9 +113,14 @@ class ToolOutcome:
 
 
 def normalize_flag(raw_flag: str) -> str:
-    raw = raw_flag.strip()
-    match = re.fullmatch(r"(?:[A-Za-z0-9_.-]+)\{([^}\r\n]*)\}", raw)
-    body = match.group(1).strip() if match else raw
+    raw = str(raw_flag).strip()
+    # Be permissive about model formatting: backticks, quotes, explanatory
+    # prose, or markdown often surround an otherwise valid flag.
+    match = re.search(r"[A-Za-z0-9_.-]+\{([^{}\r\n]+)\}", raw)
+    if match:
+        body = match.group(1).strip()
+    else:
+        body = raw.strip().strip("`'\"").strip()
     if not body or any(char in body for char in "{}"):
         raise ValueError("could not extract a valid flag body")
     return f"INCYPHER{{{body}}}"
