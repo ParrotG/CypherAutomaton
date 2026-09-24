@@ -1,385 +1,372 @@
-# IN-CYPHER Arena Agent
+# Autonomous CTF Agent for IN-CYPHER Hackathon
 
-本仓库是 IN-CYPHER Hackathon 的自主 CTF Agent 开源实现。最终提交物是一个 Docker 镜像，能够在官方 Agent Arena 中无人干预地获取题目、解题，并通过官方 CTF Agent API 提交 flag。
+Team: **INCYPHER AVENGER**
 
----
+An autonomous CTF agent system built for the IN-CYPHER Hackathon. The system is designed to complete CTF tasks without human intervention: it discovers challenges, loads descriptions and attachments, solves tasks with an LLM and tool calls, submits flags through the official platform API, and writes results to `/work/results.json`. The project won first place in the competition.
 
-## 1. 项目目标
+![Competition Outcome](<assets/Competition Outcome.png>)
 
-按照官方 `CONTRACT.md`，本项目最终提交一个可被 Arena 自动运行的 Docker 镜像：
+## 1. Project Brief
 
-- 读取运行时注入的 `CTF_BASE` / `CTF_TOKEN`；
-- 使用官方 CTF Agent API 获取题单；
-- 加载题目描述和附件；
-- 自主解题；
-- 通过官方 `client.submit()` 提交 flag；
-- 将结果写入 `/work/results.json`。
+This project is the autonomous agent system developed by team **INCYPHER AVENGER** for the IN-CYPHER Hackathon. It is packaged as a Docker image and runs unattended against a live CTF platform.
 
-官方提交方式：
+The agent:
 
-```text
-registry.in-cypher.com:5001/team-<team_id>/agent:latest
-```
+- Reads the platform endpoint and access token from runtime environment variables.
+- Fetches the challenge list and the full description of every selected challenge.
+- Downloads challenge attachments and prepares an isolated working directory.
+- Runs an LLM-driven model-tool loop with shell access, image viewing, file editing, and flag submission.
+- Handles static challenges and dynamic instance challenges.
+- Submits flags through the official CTF Agent API.
+- Persists progress and final timings to `/work/results.json`.
 
-当前实现位于：
-
-```text
-arena/
-```
-
----
-
-## 2. 当前目录结构
-
-```text
-.
-├── Dockerfile                  # 基于官方 agent-base 的提交镜像
-├── .dockerignore
-├── .env.local.example          # 本地开发配置模板
-├── README.md
-├── docs/
-│   └── 工程说明.md
-├── arena/
-│   ├── entrypoint.py           # /opt/agent/main.py 兼容入口
-│   ├── main.py                 # 调度器 / 容器入口
-│   ├── platform.py             # 官方 CTF Agent API 封装与 token 刷新
-│   ├── solver.py               # 单题编排、超时/重排、多 agent 协作
-│   ├── brain.py                # Brain 接口
-│   ├── run_once.py             # 单题 CLI
-│   ├── smoke.py                # LLM 连通性冒烟
-│   ├── api_probe.py            # 只读平台 API 探测
-│   ├── official/               # 官方 /opt/agent 文件快照
-│   └── runtime/
-│       ├── model.py            # OpenAI-compatible / OpenRouter 客户端
-│       ├── loop.py             # model-tool loop + context/token 预算
-│       ├── tools.py            # run_bash / submit_flag / view_image / editor
-│       ├── connection_proxy.py # raw TCP 多 agent 串行 gateway
-│       ├── events.py           # JSONL 事件日志
-│       └── summary.py          # attempt summary
-└── tests/                      # 单元测试
-```
-
----
-
-## 3. 外部权威材料
-
-必须优先参考以下材料：
-
-| 来源 | 用途 |
-|---|---|
-| `https://hackathonlive.in-cypher.com/` | 提交入口、重跑入口 |
-| `https://hackathonlive.in-cypher.com/usage` | 官方使用说明 |
-| `https://hackathonlive.in-cypher.com/status` | 运行/提交状态板 |
-| `https://hackathonlive.in-cypher.com/dashboard` | 资源 dashboard |
-| `arena/official/CONTRACT.md` | 官方契约，最权威 |
-| `arena/official/ctfd.py` | 官方平台客户端与 API 行为 |
-| `arena/official/main.py` / `solver.py` / `brain.py` | 官方参考 harness |
-| `arena/official/check_agent.sh` | 官方镜像检查脚本 |
-| OpenRouter 模型信息 | `deepseek/deepseek-v4.1-flash`：text+image，1M context |
-
-官方基础镜像：
+The image is built from:
 
 ```text
 registry.in-cypher.com:5001/base/agent-base:latest
 ```
 
-当前固定 digest 见 `arena/BASELINE.md`：
+## 2. Configuration and Startup
 
-```text
-sha256:d3c707c6187f49a8b5f0ba617b9590cce72a18676d93343a93098726c7723224
-```
+### 2.1 Prerequisites
 
-重新拉取/解包官方文件：
+Required:
 
-```bash
-docker pull registry.in-cypher.com:5001/base/agent-base:latest
+- Docker with `linux/amd64` image support.
+- Network access to `registry.in-cypher.com:5001` and the challenge platform.
+- A CTFd access token.
+- An OpenAI-compatible LLM API key, or organizer-injected `LLM_*` variables in the runtime environment.
 
-mkdir -p /tmp/official-agent
-docker run --rm --entrypoint tar \
-  registry.in-cypher.com:5001/base/agent-base:latest \
-  -cf - -C /opt agent | tar -xf - -C /tmp/official-agent
-```
+Optional for local development:
 
----
+- Python 3.10+
+- `uv`
 
-## 4. 本地配置 `.env.local`
+The Docker runtime is expected to follow the competition sandbox:
+
+- 2 CPUs
+- 2 GB memory
+- 256 processes
+- read-only root filesystem
+- writable `/work` and `/tmp`
+- outbound network access
+
+### 2.2 Runtime Environment Variables
+
+Platform credentials:
+
+| Variable | Default | Description |
+|---|---:|---|
+| `CTF_BASE` / `CTFD_URL` | — | Base URL of the CTF platform. |
+| `CTF_TOKEN` / `CTFD_TOKEN` / `CTF_SESSION` | — | Fresh CTFd access token for the current run. |
+| `WORK_ROOT` | `/work` | Root directory for challenge files and results. |
+| `RESULTS_PATH` | `/work/results.json` | Final result file. |
+
+Target selection:
+
+| Variable | Default | Description |
+|---|---:|---|
+| `ARENA_MODE` | `auto` | `auto`, `practice`, or `competition`. `auto` selects `competition` when non-practice challenges exist, otherwise `practice`. |
+| `INCLUDE_SOLVED` | `0` in Docker image | Include challenges already solved by the team. |
+| `ONLY_IDS` | empty | Comma/space-separated challenge IDs to run. |
+| `CATEGORIES` | empty | Comma/space-separated exact category names to include. |
+
+Scheduling and concurrency:
+
+| Variable | Default | Description |
+|---|---:|---|
+| `MAX_CONCURRENT_CHALLENGES` | `2` | Number of challenges processed concurrently. |
+| `PRELOAD_WORKERS` | `2` | Parallel workers for static attachment preloading. |
+| `AGENTS_PER_CHALLENGE` | `2` | Number of agents working in parallel on one challenge. |
+| `DYNAMIC_AGENTS_PER_CHALLENGE` | `2` | Number of agents for one dynamic challenge. |
+| `CHALLENGE_TIME_LIMIT_SECONDS` | `3600` | Per-challenge wall-clock deadline. |
+| `RENEW_INTERVAL_SECONDS` | `60` | Background renewal interval for dynamic instances. |
+
+Agent loop and budgets:
+
+| Variable | Default | Description |
+|---|---:|---|
+| `MAX_STEPS` | `1000000` | Hard backstop for model calls per attempt. |
+| `MAX_ATTEMPTS` | `5` | Maximum attempts per challenge. |
+| `CONTEXT_WINDOW_TOKENS` | `1048576` | Model context window. |
+| `CONTEXT_RESERVE_TOKENS` | `32768` | Reserved context tokens. |
+| `MAX_ATTEMPT_TOKENS` | `1200000` | Cumulative token budget per attempt. |
+| `MAX_PLAIN_REPLIES` | `5` | Stop after this many consecutive assistant replies without tool calls. |
+| `MAX_TOOL_OUTPUT` | `16000` | Maximum characters returned from one shell command. |
+| `VIEW_IMAGE_MAX_SIDE` | `1024` | Maximum rendered image side length for image analysis. |
+
+Submission:
+
+| Variable | Default | Description |
+|---|---:|---|
+| `SUBMIT_FLAGS` | `1` | `1` submits real flags. `0` intercepts and simulates success for local testing. |
+
+LLM configuration:
+
+| Variable | Default | Description |
+|---|---:|---|
+| `LLM_PROVIDER` | `deepseek` | Provider selection: `deepseek` or `openrouter`. |
+| `LLM_API_KEY` | — | Explicit OpenAI-compatible API key. Highest priority. |
+| `LLM_BASE_URL` | — | Explicit OpenAI-compatible base URL. Highest priority. |
+| `LLM_MODEL` | — | Explicit model name. Highest priority. |
+| `DEEPSEEK_API_KEY` | — | Direct DeepSeek API key. |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | Direct DeepSeek base URL. |
+| `DEEPSEEK_MODEL` | `deepseek-flash` | Direct DeepSeek model name. |
+| `OPENROUTER_API_KEY` | — | OpenRouter API key. |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter base URL. |
+| `OPENROUTER_MODEL` | `deepseek/deepseek-v4.1-flash` | OpenRouter model name. |
+
+Build-time fallback LLM arguments:
+
+| Build argument | Description |
+|---|---|
+| `DAY1_LLM_API_KEY` | Fallback API key embedded at build time. Overridden by runtime `LLM_API_KEY`. |
+| `DAY1_LLM_BASE_URL` | Fallback base URL embedded at build time. |
+| `DAY1_LLM_MODEL` | Fallback model embedded at build time. |
+
+### 2.3 Local Configuration File
+
+Copy the template and keep it private:
 
 ```bash
 cp .env.local.example .env.local
 chmod 600 .env.local
 ```
 
-常用字段：
+The local template contains the platform URL, access token, LLM provider settings, budgets, concurrency settings, and the submission toggle.
 
-```dotenv
-# 官方平台（本地 live test 用）
-CTF_BASE=https://hackathon.in-cypher.com
-CTF_TOKEN=ctfd_...
-
-# 本地模型 provider 选择：deepseek 或 openrouter
-LLM_PROVIDER=deepseek
-
-# DeepSeek 直连
-DEEPSEEK_API_KEY=...
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-flash
-
-# OpenRouter
-OPENROUTER_API_KEY=...
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-OPENROUTER_MODEL=deepseek/deepseek-v4.1-flash
-
-# Loop / context
-# MAX_STEPS 仅作为不可达保险丝；实际由 token/context 预算控制
-MAX_STEPS=1000000
-MAX_ATTEMPTS=3
-CONTEXT_WINDOW_TOKENS=1000000
-CONTEXT_RESERVE_TOKENS=8000
-MAX_ATTEMPT_TOKENS=1000000
-MAX_PLAIN_REPLIES=3
-
-# 动态实例后台续期间隔（秒）
-RENEW_INTERVAL_SECONDS=60
-
-# flag 提交开关：0 = 拦截并模拟成功，1 = 真实提交
-SUBMIT_FLAGS=1
-
-# 调度并发
-MAX_CONCURRENT_CHALLENGES=2
-PRELOAD_WORKERS=2
-```
-
-说明：
-
-- `deepseek-flash` 与 `deepseek/deepseek-v4.1-flash` 是同一目标模型的不同 provider 表示；
-- OpenRouter 路径默认会自动附带：
-  ```json
-  "reasoning": {"effort": "high"},
-  "provider": {"order": ["deepseek"], "allow_fallbacks": true}
-  ```
-- `ARENA_MODE` 未设置时默认 `auto`：题单里存在非 Practice 题则跑 competition，只有 Practice 题则跑 practice；也可显式设置 `practice` / `competition` 覆盖。
-- Day 1 arena **不会注入 `LLM_*`**，因此镜像必须通过 Dockerfile 构建参数内置自己的 Day 1 LLM 配置；Day 2 arena 注入的 `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` 会在运行时覆盖镜像内置值。
-- 官方 arena 始终注入 `CTF_TOKEN` / `CTF_BASE`。
-
----
-
-## 5. 常用开发命令
-
-### 5.1 本地测试
+### 2.4 Build
 
 ```bash
-uv sync
-uv run python -m unittest discover -s tests -v
-```
+set -a
+. ./.env.local
+set +a
 
-### 5.2 LLM 冒烟
-
-```bash
-set -a; . ./.env.local; set +a
-.venv/bin/python -m arena.smoke
-```
-
-### 5.3 只读 API 探测
-
-```bash
-set -a; . ./.env.local; set +a
-.venv/bin/python -m arena.api_probe
-```
-
-### 5.4 单题端到端
-
-```bash
-set -a; . ./.env.local; set +a
-
-.venv/bin/python -m arena.run_once \
-  --challenge-id 90 \
-  --max-steps 1000000 \
-  --max-attempts 3 \
-  --work-root /tmp/arena-once
-```
-
-### 5.5 全局调度器（本地）
-
-```bash
-set -a; . ./.env.local; set +a
-
-.venv/bin/python -m arena.main
-```
-
-常用环境变量：
-
-```dotenv
-ARENA_MODE=practice
-INCLUDE_SOLVED=1
-SUBMIT_FLAGS=0
-ONLY_IDS=17,19,24,90
-CATEGORIES=web,pwn
-MAX_CONCURRENT_CHALLENGES=2
-AGENTS_PER_CHALLENGE=2
-DYNAMIC_AGENTS_PER_CHALLENGE=2
-CHALLENGE_TIME_LIMIT_SECONDS=3600
-```
-
-调度策略：
-
-- 从 `list_challenges()` 获取题单；
-- 对每个题再调用 `client.challenge(id)` 加载完整 description / files；
-- 按分值从低到高排序；
-- 静态题先预下载文件；
-- 只要静态和动态题都有剩余，保持 **1 个动态 + 剩余静态** 的并发结构；
-- 动态题全局最多 1 个实例；
-- 每题完成写 `/work/results.json`，包含 `timings`。
-
----
-
-## 6. 日志与结果
-
-运行时目录：
-
-```text
-/work/
-├── results.json                          # 总结果 + 每题耗时
-└── <challenge_id>/
-    ├── events.jsonl                      # 完整 JSONL 事件日志
-    ├── attempts/
-    │   └── 001/
-    │       └── summary.json              # 触限/出错后的 attempt summary
-    └── ...                               # 下载文件 / 临时文件
-```
-
-事件类型包括：
-
-```text
-run_start
-model_request
-model_reply
-tool_call
-tool_result
-assistant_plain
-context_limit
-model_error
-run_end
-```
-
-注意：
-
-- `events.jsonl` 可能包含 flag、题目输出、脚本内容；
-- 当前**不做日志脱敏**；
-- 不要把 `events.jsonl` 提交到仓库或共享；
-- 建议本地测试使用独立 Docker volume，运行后导出并删除。
-
----
-
-## 7. Docker 构建与运行
-
-### 7.1 构建
-
-```bash
-DOCKER_BUILDKIT=0 docker build -t arena-test \
+docker build --platform linux/amd64 --provenance=false \
+  -t incypher-agent \
   --build-arg DAY1_LLM_API_KEY="$OPENROUTER_API_KEY" \
   --build-arg DAY1_LLM_BASE_URL="$OPENROUTER_BASE_URL" \
   --build-arg DAY1_LLM_MODEL="$OPENROUTER_MODEL" .
 ```
 
-BuildKit 正常时也可用：
+### 2.5 Run Locally
+
+Real-submission mode:
 
 ```bash
-docker build --platform linux/amd64 --provenance=false -t arena-test \
-  --build-arg DAY1_LLM_API_KEY="$OPENROUTER_API_KEY" \
-  --build-arg DAY1_LLM_BASE_URL="$OPENROUTER_BASE_URL" \
-  --build-arg DAY1_LLM_MODEL="$OPENROUTER_MODEL" .
-```
+mkdir -p "$PWD/incypher-work"
+chmod 777 "$PWD/incypher-work"
 
-### 7.2 本地官方沙箱参数运行
-
-```bash
-docker run --rm \
+docker run -d --name incypher-agent \
   --cap-drop=ALL \
   --security-opt no-new-privileges:true \
   --read-only \
-  -v "$PWD/arena-work:/work" \
-  --tmpfs /tmp:rw,size=1g \
-  --cpus 8 \
-  --memory 8g \
-  --pids-limit 1024 \
+  -v "$PWD/incypher-work:/work" \
+  --tmpfs /tmp:rw,size=256m \
+  --cpus 2 \
+  --memory 2g \
+  --pids-limit 256 \
   --network bridge \
   --env-file "$PWD/.env.local" \
   -e ARENA_MODE=auto \
-  -e INCLUDE_SOLVED=1 \
-  -e SUBMIT_FLAGS=0 \
-  -e MAX_CONCURRENT_CHALLENGES=6 \
-  -e MAX_ATTEMPTS=1 \
-  arena-test
+  incypher-agent
 ```
 
-正式提交时使用官方 `team-<id>/agent:latest`：
+Local no-submission test:
 
 ```bash
-echo "$CTF_TOKEN" | docker login registry.in-cypher.com:5001 -u team-<id> --password-stdin
-
-docker tag arena-test:latest \
-  registry.in-cypher.com:5001/team-<id>/agent:latest
-
-docker push registry.in-cypher.com:5001/team-<id>/agent:latest
+docker run -d --name incypher-agent-test \
+  --cap-drop=ALL \
+  --security-opt no-new-privileges:true \
+  --read-only \
+  -v "$PWD/incypher-work:/work" \
+  --tmpfs /tmp:rw,size=256m \
+  --cpus 2 \
+  --memory 2g \
+  --pids-limit 256 \
+  --network bridge \
+  --env-file "$PWD/.env.local" \
+  -e ARENA_MODE=auto \
+  -e SUBMIT_FLAGS=0 \
+  incypher-agent
 ```
 
-当前官方 registry 上的 `:latest` 可能是旧 digest；重新 push 前先更新本地镜像。
+### 2.6 Submit the Image
 
----
+```bash
+printf '%s' "$CTF_TOKEN" | docker login registry.in-cypher.com:5001 \
+  --username "team-<team_id>" \
+  --password-stdin
 
-## 8. 已实现的重要行为
+docker tag incypher-agent \
+  "registry.in-cypher.com:5001/team-<team_id>/agent:latest"
 
-- 官方 `ctfd.py` 全量 API 接入；
-- 完整 challenge 加载（description/files）；
-- 静态题文件预加载；
-- 并发调度：`1 dynamic + N static`；
-- 动态实例全局锁与 finally destroy，并在 attempt 运行期间后台 `renew`；
-- 平台 API 瞬时错误自动重试；
-- 累计 token 预算 + 连续无 tool call 保险丝；
-- `ARENA_MODE=auto` 自动区分 Day 1 practice / Day 2 competition；
-- 单题内默认 2 个并行 agent；每个 agent 独立 workdir，互不读取对方文件；
-- 单题所有 agent 退出后，将各自 summary 追加到同一个 `summary.txt`，写入时用线程锁串行化；
-- raw TCP 动态题若开启多 agent，会启动本地串行 TCP gateway，PoW 也由 gateway 处理；
-- `CHALLENGE_TIME_LIMIT_SECONDS` 默认 3600 秒；超时后停止 agent、destroy dynamic，并把题目重新排到队尾；
-- bash 子进程可以正常使用 `curl`/`wget` 等外网工具，生产 sandbox 的 `--network bridge` 已允许出网；
-- `max_steps` + `context_window_tokens` 双预算；
-- 失败 attempt 生成 deterministic summary，支持下一 attempt 继承；
-- `SUBMIT_FLAGS=0` 拦截提交并模拟成功；
-- OpenRouter `reasoning.effort=high` + provider deepseek + allow_fallbacks；
-- Bash 策略拦截根目录扫描和读取自身日志；
-- `events.jsonl` 不再每次复制完整 messages 历史。
+docker push \
+  "registry.in-cypher.com:5001/team-<team_id>/agent:latest"
+```
 
----
+The newest `:latest` image is what the platform runs.
 
-## 9. 已知限制
+### 2.7 Output
 
-1. `arena/official/` 是官方 base 的只读快照，仅作为契约和参考保留。
-2. `events.jsonl` 可能很大，当前只避免记录完整 messages 历史，尚未做轮转/压缩。
-3. Bash 策略是工具层启发式限制，不是完整 OS 沙箱。
-4. `already_solved` 不能证明本次 flag 正确；官方 API 对已解 Practice 题可能直接返回 already_solved。
-5. 动态题全局只允许一个实例，是总耗时瓶颈。
-6. 单题超时后会重新排到队尾；如果题目持续超时，会一直循环，需要外部停止或后续增加全局 deadline。
-7. 本地 Docker 容器随本机关机会停止；长跑应部署在远端主机或官方 runner。
-8. `SUBMIT_FLAGS=0` 仅用于本地测试，会拦截并模拟提交成功，不能用于正式计分。
+```text
+/work/results.json
+```
 
----
+Runtime layout per challenge:
 
-## 10. 开发建议
+```text
+/work/<challenge_id>/
+├── shared/
+├── attempts/
+│   └── 001/
+│       └── summary.txt
+└── agents/
+    ├── agent-0/
+    │   ├── events.jsonl
+    │   └── <challenge files>
+    └── agent-1/
+        ├── events.jsonl
+        └── <challenge files>
+```
 
-优先阅读：
+## 3. Design and Architecture
 
-1. `docs/工程说明.md`
-2. `arena/official/CONTRACT.md`
-3. `arena/main.py`
-4. `arena/solver.py`
-5. `arena/runtime/loop.py`
-6. `arena/runtime/model.py`
-7. `arena/runtime/tools.py`
-8. `arena/official/ctfd.py`
+### 3.1 Agent Design
 
-建议流程：
+The agent is implemented as a small model-tool loop.
 
-1. 用 `SUBMIT_FLAGS=0` 在本地 Docker 中做短 smoke；
-2. 用 `check_agent.sh` 做结构检查；
-3. 只在确认全链路正常后再 push 到官方 registry；
-4. 比赛计分 run 开始后，避免无意义地重复 push。
+Core components:
+
+- `arena/entrypoint.py`: compatibility entrypoint for `python /opt/agent/main.py`.
+- `arena/main.py`: global challenge scheduler.
+- `arena/solver.py`: per-challenge orchestration, retries, timeout, and parallel agents.
+- `arena/brain.py`: `Brain` implementation used by the solver.
+- `arena/runtime/model.py`: OpenAI-compatible model client.
+- `arena/runtime/loop.py`: model-tool loop and context/token budgets.
+- `arena/runtime/tools.py`: `run_bash`, `submit_flag`, `view_image`, and `str_replace_editor`.
+- `arena/runtime/connection_proxy.py`: local serialized TCP gateway for raw dynamic services.
+- `arena/runtime/events.py`: JSONL event logging.
+- `arena/runtime/summary.py`: deterministic attempt summaries.
+
+Each agent receives one challenge prompt containing:
+
+- challenge name, category, points, and type;
+- full description;
+- names of downloaded files;
+- live connection information when applicable;
+- previous attempt summary when applicable.
+
+The model can call tools to inspect files, run shell commands, view images or DICOM files, edit scripts, and submit candidate flags. The runtime enforces context and token budgets, a step backstop, and a consecutive no-tool-call limit.
+
+Multimodal analysis:
+
+- `view_image` reads local PNG/JPEG/GIF/WebP images and DICOM files.
+- DICOM files are rendered through `pydicom` and `numpy`.
+- Images are resized, encoded, and attached to the next model turn as image content.
+- Image token cost is estimated with a fixed budget instead of counting base64 bytes as text.
+
+### 3.2 Runtime Environment
+
+The image is designed for the competition sandbox:
+
+- read-only root filesystem;
+- writable `/work` and `/tmp`;
+- no Linux capabilities;
+- no privilege escalation;
+- 2 CPUs, 2 GB memory, 256 PIDs;
+- outbound network access.
+
+The image entrypoint is:
+
+```text
+python /opt/agent/main.py
+```
+
+`/opt/agent/main.py` is a thin shim to `arena.main`, so the scheduler runs whether the runtime honors the image entrypoint or directly invokes `/opt/agent/main.py`.
+
+Platform credentials are read at runtime. The platform client refreshes the token from `CTF_TOKEN`, `CTFD_TOKEN`, or `CTF_SESSION` before every platform call, so a freshly injected token is used for submissions.
+
+### 3.3 Concurrency
+
+Concurrency is configured at two levels:
+
+- Global challenge concurrency: `MAX_CONCURRENT_CHALLENGES`, default `2`.
+- Per-challenge agent concurrency: `AGENTS_PER_CHALLENGE`, default `2`.
+- Dynamic challenges use `DYNAMIC_AGENTS_PER_CHALLENGE`, default `2`.
+
+This yields up to `2 × 2 = 4` active agents under the default settings.
+
+Isolation:
+
+- challenge attachments are downloaded once into `/work/<id>/shared`;
+- each agent copies attachments into `/work/<id>/agents/agent-N`;
+- each agent has its own working directory, event log, and scratch files;
+- the shell tool blocks parent-directory traversal and absolute `/work` access outside the agent workspace;
+- file editing and image viewing resolve paths inside the agent workspace.
+
+Dynamic challenges:
+
+- at most one dynamic instance is live globally;
+- raw TCP dynamic services are exposed to agents through a local serialized gateway;
+- the gateway handles the proof-of-work gate and permits only one upstream session at a time;
+- HTTP dynamic services are used directly;
+- dynamic instances are renewed in the background and destroyed when the challenge attempt ends.
+
+Summary sharing:
+
+- agents do not communicate during solving;
+- each agent writes its own summary when it exits;
+- all summaries for an attempt are appended to the same `summary.txt` under a thread lock.
+
+### 3.4 Task-Level Scheduling
+
+Each challenge follows this control flow:
+
+1. Prepare attachments.
+2. Boot a dynamic instance if needed.
+3. Start one or two agents in independent work directories.
+4. Run the model-tool loop for each agent.
+5. Stop when one agent solves the challenge or the time limit is reached.
+6. Append agent summaries.
+7. Destroy dynamic instances.
+8. Retry up to `MAX_ATTEMPTS`.
+9. On timeout, mark the challenge for requeue and move it to the tail of the global queue.
+
+Per-challenge controls:
+
+- `CHALLENGE_TIME_LIMIT_SECONDS` default `3600`;
+- `MAX_ATTEMPTS` default `5`;
+- `MAX_STEPS` default `1000000`;
+- `CONTEXT_WINDOW_TOKENS` default `1048576`;
+- `MAX_ATTEMPT_TOKENS` default `1200000`;
+- `MAX_PLAIN_REPLIES` default `5`.
+
+### 3.5 Global Scheduling
+
+The global scheduler in `arena/main.py`:
+
+1. Connects to the platform using environment credentials.
+2. Fetches the challenge list.
+3. Resolves the target mode (`auto`, `practice`, or `competition`).
+4. Fetches the team's solved challenge IDs.
+5. Selects targets by mode, solved state, optional IDs, and optional categories.
+6. Loads the full challenge record for every selected challenge.
+7. Sorts selected challenges by points ascending, then by ID.
+8. Preloads static challenge attachments in parallel.
+9. Runs the main scheduling loop.
+10. Writes `/work/results.json` after each challenge finishes.
+
+Scheduling policy:
+
+- dynamic challenges are globally serialized to one live instance;
+- if both static and dynamic work remain, one dynamic challenge is kept in flight and remaining concurrency slots are filled with static challenges;
+- each challenge runs up to `AGENTS_PER_CHALLENGE` agents in parallel;
+- timed-out challenges are appended back to the tail of their queue;
+- result entries include start time, finish time, duration, attempts, agent count, and submission status.
+
+## References
+
+- https://www.imperial.ac.uk/about/global/singapore/research/in-cypher/in-cypher-hackathon/
+- https://hackathon.in-cypher.com/how-to-play
+- https://hackathonlive.in-cypher.com/
