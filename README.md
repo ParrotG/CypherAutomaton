@@ -1,25 +1,19 @@
-# IN-CYPHER Arena Agent 接手说明
+# IN-CYPHER Arena Agent
 
-本仓库现已进入“官方 Agent Arena 提交物”阶段。旧的自建 Bridge / Scheduler / Blackboard 实现保留在 `src/` 中，但当前 Docker 镜像和新开发入口以 `arena/` 为准。
-
-当前活跃提交：
-
-```text
-7a9461a stage 10: full challenge prompts, OpenRouter defaults, bash policy, log size fix
-```
-
-当前分支：`master`。旧 `origin/master` 可能落后，接手时先执行：
-
-```bash
-git status
-git log --oneline --decorate -20
-```
+本仓库是 IN-CYPHER Hackathon 的自主 CTF Agent 开源实现。最终提交物是一个 Docker 镜像，能够在官方 Agent Arena 中无人干预地获取题目、解题，并通过官方 CTF Agent API 提交 flag。
 
 ---
 
 ## 1. 项目目标
 
-按照官方 `CONTRACT.md`，本项目最终需要提交一个 Docker 镜像，镜像内是能够**无人干预地获取题目、解题、提交 flag** 的自主 agent。
+按照官方 `CONTRACT.md`，本项目最终提交一个可被 Arena 自动运行的 Docker 镜像：
+
+- 读取运行时注入的 `CTF_BASE` / `CTF_TOKEN`；
+- 使用官方 CTF Agent API 获取题单；
+- 加载题目描述和附件；
+- 自主解题；
+- 通过官方 `client.submit()` 提交 flag；
+- 将结果写入 `/work/results.json`。
 
 官方提交方式：
 
@@ -33,46 +27,36 @@ registry.in-cypher.com:5001/team-<team_id>/agent:latest
 arena/
 ```
 
-旧实现位于：
-
-```text
-src/incypher_bridge/
-src/incypher_scheduler/
-src/incypher_agent/
-```
-
-旧实现不再作为 Docker 入口，后续应在合适阶段删除或归档。
-
 ---
 
 ## 2. 当前目录结构
 
 ```text
 .
-├── Dockerfile                  # 基于官方 agent-base 的新镜像
+├── Dockerfile                  # 基于官方 agent-base 的提交镜像
 ├── .dockerignore
 ├── .env.local.example          # 本地开发配置模板
 ├── README.md
 ├── docs/
-│   └── 工程说明.md             # 详细接手说明
+│   └── 工程说明.md
 ├── arena/
-│   ├── BASELINE.md             # 官方 agent-base 基线
-│   ├── official/               # 官方 /opt/agent 文件快照
-│   ├── brain.py                # 官方 Brain 接口实现
-│   ├── main.py                 # 全局调度器 / 容器入口
-│   ├── platform.py             # 官方 CTF Agent API 封装
-│   ├── solver.py               # 单题编排、summary/retry
-│   ├── run_once.py             # 单题端到端 CLI
+│   ├── entrypoint.py           # /opt/agent/main.py 兼容入口
+│   ├── main.py                 # 调度器 / 容器入口
+│   ├── platform.py             # 官方 CTF Agent API 封装与 token 刷新
+│   ├── solver.py               # 单题编排、超时/重排、多 agent 协作
+│   ├── brain.py                # Brain 接口
+│   ├── run_once.py             # 单题 CLI
 │   ├── smoke.py                # LLM 连通性冒烟
-│   ├── api_probe.py            # 只读官方 API 探测
+│   ├── api_probe.py            # 只读平台 API 探测
+│   ├── official/               # 官方 /opt/agent 文件快照
 │   └── runtime/
 │       ├── model.py            # OpenAI-compatible / OpenRouter 客户端
-│       ├── loop.py             # model-tool loop + context budget
-│       ├── tools.py            # run_bash / submit_flag / editor
+│       ├── loop.py             # model-tool loop + context/token 预算
+│       ├── tools.py            # run_bash / submit_flag / view_image / editor
+│       ├── connection_proxy.py # raw TCP 多 agent 串行 gateway
 │       ├── events.py           # JSONL 事件日志
 │       └── summary.py          # attempt summary
-├── src/                        # 旧 Bridge/Scheduler/Agent（待清理）
-└── tests/                      # 新旧测试混合
+└── tests/                      # 单元测试
 ```
 
 ---
@@ -367,22 +351,20 @@ docker push registry.in-cypher.com:5001/team-<id>/agent:latest
 
 ---
 
-## 9. 已知限制 / TODO
+## 9. 已知限制
 
-1. `src/` 旧 Bridge/Scheduler/Blackboard 尚未删除。
-2. `compose.yaml` 仍是旧 Bridge 服务，需与旧代码一起清理。
-3. Docker 中 `arena/main.py` 已是入口，但官方 `main.py`/`solver.py`/`brain.py` 快照保留在 `arena/official/` 仅作参考。
-4. 当前没有多模态 `view_image`；DeepSeek V4.1 Flash 支持 text+image，但尚未接入。
-5. `events.jsonl` 可能很大；当前只修掉了完整 messages 重复，尚未做轮转/压缩。
-6. Bash 策略是启发式限制，不是完整 OS 沙箱。
-7. 当前环境 `~/.docker` 可能只读，BuildKit 或 docker login 可能需要 `DOCKER_BUILDKIT=0` 或临时 `DOCKER_CONFIG`。
-8. `already_solved` 不能证明本次 flag 正确；官方 API 对已解 Practice 题会直接返回 already_solved。
-9. 动态题单并发上限为 1，是总耗时瓶颈。
-10. 本地 Docker 容器随本机关机会停止；真正远端长跑需在远端主机执行或使用远端 Docker context。
+1. `arena/official/` 是官方 base 的只读快照，仅作为契约和参考保留。
+2. `events.jsonl` 可能很大，当前只避免记录完整 messages 历史，尚未做轮转/压缩。
+3. Bash 策略是工具层启发式限制，不是完整 OS 沙箱。
+4. `already_solved` 不能证明本次 flag 正确；官方 API 对已解 Practice 题可能直接返回 already_solved。
+5. 动态题全局只允许一个实例，是总耗时瓶颈。
+6. 单题超时后会重新排到队尾；如果题目持续超时，会一直循环，需要外部停止或后续增加全局 deadline。
+7. 本地 Docker 容器随本机关机会停止；长跑应部署在远端主机或官方 runner。
+8. `SUBMIT_FLAGS=0` 仅用于本地测试，会拦截并模拟提交成功，不能用于正式计分。
 
 ---
 
-## 10. 接手建议
+## 10. 开发建议
 
 优先阅读：
 
@@ -395,10 +377,9 @@ docker push registry.in-cypher.com:5001/team-<id>/agent:latest
 7. `arena/runtime/tools.py`
 8. `arena/official/ctfd.py`
 
-下一步建议顺序：
+建议流程：
 
-1. 用 `SUBMIT_FLAGS=0` 重跑完整 Practice，确认完整题面加载后 context/步骤明显下降；
-2. 删除旧 `src/`、`compose.yaml` 和旧测试；
-3. 决定是否实现 `view_image` 多模态工具；
-4. 为 `events.jsonl` 增加轮转/压缩；
-5. 重新 push 最新镜像到官方 registry。
+1. 用 `SUBMIT_FLAGS=0` 在本地 Docker 中做短 smoke；
+2. 用 `check_agent.sh` 做结构检查；
+3. 只在确认全链路正常后再 push 到官方 registry；
+4. 比赛计分 run 开始后，避免无意义地重复 push。

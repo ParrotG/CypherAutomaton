@@ -1,31 +1,20 @@
 [project]
-name = "incypher-bridge"
-version = "0.1.0"
-description = "FastAPI + asyncio multi-agent IN-CYPHER raw-TCP bridge"
+name = "incypher-arena-agent"
+version = "1.0.0"
+description = "Autonomous CTF agent for the IN-CYPHER Arena"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "fastapi>=0.115",
-    "httpx>=0.27",
-    "openai>=1.0",
-    "uvicorn[standard]>=0.30",
+    "openai>=1.0,<2",
     "Pillow>=10.0",
     "numpy>=1.26",
     "pydicom>=2.4",
 ]
 
-[project.scripts]
-incypher-bridge = "incypher_bridge.cli:main"
-incypher-agent = "incypher_agent.cli:main"
-incypher-scheduler = "incypher_scheduler.cli:main"
-
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-py-modules = ["solver", "bridge"]
-
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["arena*"]
